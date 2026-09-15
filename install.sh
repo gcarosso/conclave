@@ -38,7 +38,7 @@ fi
 command -v git >/dev/null 2>&1 && ok "git" || warn "git not found (the publish gate's --staged/--diff modes need it)"
 command -v bash >/dev/null 2>&1 && ok "bash $(bash -c 'echo ${BASH_VERSION%%(*}')" || warn "bash not found"
 echo
-echo "Vendor CLIs (optional — each vendor you skip is simply never routed to)"
+echo "Vendor clients (configure role defaults for the clients you install)"
 for v in claude codex grok; do
   if command -v "$v" >/dev/null 2>&1; then ok "$v  ($(command -v "$v"))"; else warn "$v not on PATH"; fi
 done

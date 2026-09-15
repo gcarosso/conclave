@@ -1,6 +1,6 @@
 """Deterministic checks, structured review, and the acceptance decision.
 
-Acceptance is decided here from contract-declared checks. Workers never award PASS.
+Acceptance is computed from contract-declared checks and recorded evidence.
 """
 import hashlib
 import json
@@ -155,7 +155,10 @@ def evaluate(contract, artifact_text, job_dir, attempt_dir, reviewer=None, execu
     else:
         for c in contract["checks"]:
             if c["kind"] == "builtin":
-                s, ev = run_builtin(c["rule"], artifact_text, job_dir)
+                try:
+                    s, ev = run_builtin(c["rule"], artifact_text, job_dir)
+                except (ValueError, re.error, OSError) as exc:
+                    s, ev = "blocked", "invalid builtin check: %s" % exc
                 checks_out.append({"id": c["id"], "status": s, "evidence": ev})
             elif c["kind"] == "command":
                 s, ev = run_command(c["rule"], job_dir)
@@ -174,6 +177,11 @@ def evaluate(contract, artifact_text, job_dir, attempt_dir, reviewer=None, execu
                     f.write(env.get("text") or "")
                 parsed = parse_review(env.get("text") or "") if env.get("execution_status") == "succeeded" else None
                 errs = validate(parsed, REVIEW_OUTPUT_SCHEMA) if parsed is not None else ["no parseable review"]
+                if not errs:
+                    ids = [c["id"] for c in parsed["checks"]]
+                    expected = [c["id"] for c in review_checks]
+                    if len(ids) != len(set(ids)) or set(ids) != set(expected):
+                        errs.append("review must contain each requested check exactly once")
                 if errs:
                     for c in review_checks:
                         checks_out.append({"id": c["id"], "status": "blocked", "evidence": "reviewer output invalid: %s" % "; ".join(errs[:3])})

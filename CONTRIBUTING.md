@@ -1,31 +1,31 @@
 # Contributing
 
-Thanks for looking. conclave is small on purpose: standard-library Python and Bash, no dependencies, everything testable offline. Keep it that way.
+Conclave uses standard-library Python and Bash. Keep changes focused and preserve offline testing of routing, acceptance, and publication scans.
 
-## Ground rules
-
-- **Offline tests must stay offline.** `make test` runs the router against a fake vendor and the gate against fixtures. Nothing in the test suite may call a vendor, touch the network, or need a `governance.json`.
-- **Exit 0 is not done.** A change to the kernel or verifier needs a test that shows the acceptance decision, not just that the code ran.
-- **Fail closed at the boundary.** Anything that touches `gate/` must keep the property "a scan error blocks". Add a fixture for every new behavior.
-- **No personal data, ever.** No home paths, emails, private folder names, or account details in code, fixtures, or docs. The gate's own fixtures use `example.com`-style placeholders.
-- **One source of truth.** Rules live in `shared/governance.json`; instruction files are generated. Do not hand-edit a generated file in a PR.
-
-## Adding a vendor
-
-1. Write one adapter function in `router/adapters.py` returning the standard envelope; wire it into `run()`.
-2. Add its models to `policy.json` (`models` + a ladder with tiers 1–3) and its name to `vendors` in `shared/governance.example.json`.
-3. If it only ever receives a prompt (no local CLI with a sandbox), add it to `PROMPT_ONLY_VENDORS` so it runs from an empty sandbox.
-4. Add routing tests to `router/tests.py`.
-
-## Adding a role
-
-Add an entry to `policy.json` `roles` (description, default vendor/tier, `max_turns`, `codex_sandbox`, `review`) and, if the role needs a system prompt, to `ROLE_PROMPT` in `router/ai`.
-
-## Workflow
+## Validation
 
 ```bash
-make test        # router + gate
-make lint        # shellcheck + py_compile
+make test
+make lint
 ```
 
-Open a PR with a one-paragraph description of the behavior change and the test that proves it. Keep the diff focused.
+`make test` uses fake vendor responses and temporary repositories. It must not call a model, use credentials, or require a personal governance file. Test the acceptance decision or protected boundary when changing control logic. Add a failing-case fixture for scanner changes.
+
+`make lint` compiles Python and runs ShellCheck when installed. A ShellCheck failure fails the target; an absent installation is reported as skipped. CI installs ShellCheck for its Linux lint job.
+
+## Extension points
+
+- **Vendor:** add an adapter returning the standard envelope, its dispatch branch, model entries, ladder, and governance membership. Test eligibility, permissions, and failure handling.
+- **Role:** add a policy entry and, if needed, an instruction in `ROLE_PROMPT`.
+- **Check:** add a builtin in `verify.py`, or pass a command/review check through the kernel API.
+- **Governance:** edit the source JSON and regenerate instructions. Test drift detection and relevant permission syntax.
+
+`PROMPT_ONLY_VENDORS` selects an empty working directory. It does not provide process isolation; document the tools and host permissions of any new adapter.
+
+## Documentation and examples
+
+Explain the input, operation, output, and relevant limit. Use concrete terms such as adapter call, response artifact, check, and verdict. Distinguish a configured setting, an offline test, and a live observation. Quantified performance claims need a reproducible measurement.
+
+Keep examples synthetic or sanitized, with their provenance stated. Do not commit local paths, credentials, personal configuration, or private job records. Preserve captured example output as evidence rather than polishing its wording.
+
+Open a pull request describing the behavior change and validation. Include remaining limitations that affect use or review.

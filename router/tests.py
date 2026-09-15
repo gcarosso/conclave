@@ -29,7 +29,7 @@ class FakeVendor:
         self.script = []  # list of (execution_status, text)
 
     def __call__(self, vendor, model, prompt, cwd, timeout, **kw):
-        self.calls.append({"vendor": vendor, "model": model, "prompt": prompt, "cwd": cwd})
+        self.calls.append({"vendor": vendor, "model": model, "prompt": prompt, "cwd": cwd, **kw})
         status, text = self.script.pop(0) if self.script else ("succeeded", "ok " * 20)
         return adapters.envelope(execution_status=status, exit_code=0 if status == "succeeded" else 1, text=text,
                                  input_tokens=10, output_tokens=5, cost_usd=0.0, elapsed_s=0.1)
@@ -41,7 +41,8 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="ai-test-")
         self.hub = os.path.join(self.tmp, "hub")
-        g = json.load(open(EXAMPLE))
+        with open(EXAMPLE) as f:
+            g = json.load(f)
         g["hub"] = self.hub
         for name in g["domains"]:
             os.makedirs(os.path.join(self.hub, name), exist_ok=True)
@@ -57,6 +58,10 @@ class Base(unittest.TestCase):
         self.g, self.p = kernel.load()
 
     def tearDown(self):
+        for key, handle in list(kernel._WRITER_LOCKS.items()):
+            if key[0].startswith(self.tmp):
+                handle.close()
+                del kernel._WRITER_LOCKS[key]
         kernel.GOV_PATH, kernel.INDEX_PATH, kernel.jobs_root, adapters.run = self._orig
         shutil.rmtree(self.tmp, ignore_errors=True)
 
@@ -92,6 +97,17 @@ class Routing(Base):
 
     def test_max_tier_caps(self):
         self.assertEqual(kernel.resolve(self.g, self.p, "work", "code", "private", max_tier=1)[1], "gpt-5.6-luna")
+
+    def test_explicit_model_cannot_bypass_tier_cap(self):
+        with self.assertRaises(kernel.RouteError):
+            kernel.resolve(self.g, self.p, "work", "code", "private", model="gpt-6-astra", max_tier=1)
+
+    def test_bad_tier_and_cross_vendor_ladder_are_rejected(self):
+        with self.assertRaises(kernel.RouteError):
+            kernel.resolve(self.g, self.p, "work", "scout", "private", tier=0)
+        self.p["ladders"]["claude"]["1"] = "gpt-5.6-luna"
+        with self.assertRaises(kernel.RouteError):
+            kernel.resolve(self.g, self.p, "work", "scout", "private")
 
     def test_publish_is_not_a_role(self):
         self.assertNotIn("publish", self.p["roles"])
@@ -194,9 +210,6 @@ class Acceptance(Base):
         c, jd, v, m, t = self._job(checks=[{"id": "nonempty", "kind": "builtin", "rule": "nonempty"},
                                           {"id": "grep", "kind": "command", "rule": "grep -q hello result.md"}])
         self.fake.script = [("succeeded", "hello world, a sufficiently long artifact for the nonempty rule")]
-        # the command check runs before result.md is written at the job root, so write it as the attempt would
-        with open(os.path.join(jd, "result.md"), "w") as f:
-            f.write("hello world")
         text, acc, meta = kernel.run_job(self.g, self.p, c, jd, v, m, t, "hi", interactive=False)
         self.assertEqual(acc, "pass")
 
@@ -251,6 +264,16 @@ class Acceptance(Base):
             contract = json.load(f)
         self.assertEqual(contract["authorization"]["top_model_approval"]["approved_by"], self.g["operator"])
 
+    def test_tier_cap_also_prevents_escalation(self):
+        c, jd, v, m, t = self._job(role="write", review=True)
+        bad = json.dumps({"checks": [{"id": "goal-met", "status": "fail", "evidence": "missing result"}],
+                          "issues": [{"id": "R1", "severity": "major", "problem": "incomplete", "fix": "complete", "capability_deficit": True}]})
+        self.fake.script = [("succeeded", "draft " * 10), ("succeeded", bad)] * 2
+        _, acc, _ = kernel.run_job(self.g, self.p, c, jd, v, m, t, "write", approve_top=True, interactive=False, max_tier=2)
+        self.assertEqual(acc, "fail")
+        self.assertEqual(len(self.fake.calls), 4)
+        self.assertNotIn("claude-fable-5-1", [call["model"] for call in self.fake.calls])
+
     def test_private_review_prefers_codex_for_claude_writer(self):
         c, jd, v, m, t = self._job(role="write", review=True, domain="personal", data_class="private")
         good = json.dumps({"checks": [{"id": "goal-met", "status": "pass", "evidence": "ok"}], "issues": []})
@@ -264,6 +287,56 @@ class Acceptance(Base):
         text, acc, meta = kernel.run_job(self.g, self.p, c, jd, v, m, t, "write", interactive=False)
         self.assertEqual(acc, "blocked")
         self.assertEqual(len(self.fake.calls), 1)  # no reviewer call was spent
+
+    def test_review_uses_read_only_permissions_and_schema(self):
+        c, jd, v, m, t = self._job(role="write", review=True)
+        good = json.dumps({"checks": [{"id": "goal-met", "status": "pass", "evidence": "line 1"}], "issues": []})
+        self.fake.script = [("succeeded", "draft " * 10), ("succeeded", good)]
+        kernel.run_job(self.g, self.p, c, jd, v, m, t, "write", interactive=False)
+        review = self.fake.calls[1]
+        self.assertEqual(review["sandbox"], "read-only")
+        self.assertTrue(review["cwd"].endswith("/sandbox"))
+        self.assertTrue(review["no_tools"])
+        self.assertFalse(review["network"])
+        self.assertEqual(review["json_schema"], verify.REVIEW_OUTPUT_SCHEMA)
+
+    def test_reviewer_fallback_records_actual_vendor(self):
+        c, jd, v, m, t = self._job(role="write", review=True)
+        good = json.dumps({"checks": [{"id": "goal-met", "status": "pass", "evidence": "line 1"}], "issues": []})
+        self.fake.script = [("succeeded", "draft " * 10), ("failed", ""), ("succeeded", good)]
+        _, acc, meta = kernel.run_job(self.g, self.p, c, jd, v, m, t, "write", interactive=False)
+        self.assertEqual(acc, "pass")
+        self.assertEqual(meta["verdict"]["reviewer"]["vendor"], self.fake.calls[-1]["vendor"])
+
+    def test_review_and_fallback_count_toward_budget(self):
+        c, jd, v, m, t = self._job(role="write", review=True)
+        c["limits"]["calls"] = 2
+        self.fake.script = [("succeeded", "draft " * 10), ("failed", "")]
+        _, acc, _ = kernel.run_job(self.g, self.p, c, jd, v, m, t, "write", interactive=False)
+        self.assertEqual(acc, "blocked")
+        self.assertEqual(len(self.fake.calls), 2)
+
+    def test_unavailable_reviewer_is_never_called(self):
+        c, jd, v, m, t = self._job(role="write", review=True, domain="personal", data_class="private")
+        for entry in self.p["models"]:
+            if entry["id"] == "gpt-5.6-sol":
+                entry["available"] = False
+        _, acc, _ = kernel.run_job(self.g, self.p, c, jd, v, m, t, "write", interactive=False)
+        self.assertEqual(acc, "blocked")
+        self.assertEqual(len(self.fake.calls), 1)
+
+    def test_duplicate_review_checks_block(self):
+        c, jd, v, m, t = self._job(role="write", review=True)
+        check = {"id": "goal-met", "status": "pass", "evidence": "line 1"}
+        self.fake.script = [("succeeded", "draft " * 10), ("succeeded", json.dumps({"checks": [check, check], "issues": []}))]
+        _, acc, _ = kernel.run_job(self.g, self.p, c, jd, v, m, t, "write", interactive=False)
+        self.assertEqual(acc, "blocked")
+
+    def test_invalid_builtin_blocks_with_record(self):
+        c, jd, v, m, t = self._job(checks=[{"id": "pattern", "kind": "builtin", "rule": "regex:["}])
+        _, acc, _ = kernel.run_job(self.g, self.p, c, jd, v, m, t, "read", interactive=False)
+        self.assertEqual(acc, "blocked")
+        self.assertTrue(os.path.exists(os.path.join(jd, "acceptance.json")))
 
 
 class Isolation(Base):
@@ -303,14 +376,44 @@ class Isolation(Base):
         kernel.release_writer_lock(self.g, c1)
         kernel.create_job(self.g, c2)
 
-    def test_finished_job_lock_is_reclaimed(self):
+    def test_released_lock_file_can_be_reused(self):
         v, m, t = kernel.resolve(self.g, self.p, "public", "code", "public")
         c1 = kernel.build_contract(self.g, self.p, "public", "code", "a", "public", v, m, t, "test", review=False)
         jd = kernel.create_job(self.g, c1)
-        with open(os.path.join(jd, "acceptance.json"), "w") as f:  # a finished job that never released its lock
-            f.write("{}")
+        kernel.release_writer_lock(self.g, c1)
+        self.assertTrue(os.path.exists(kernel._lock_path(self.g, c1)))
         c2 = kernel.build_contract(self.g, self.p, "public", "code", "b", "public", v, m, t, "test", review=False)
         kernel.create_job(self.g, c2)
+
+    def test_lock_cannot_be_stolen_before_job_creation_or_on_partial_output(self):
+        v, m, t = kernel.resolve(self.g, self.p, "public", "code", "public")
+        c1 = kernel.build_contract(self.g, self.p, "public", "code", "a", "public", v, m, t, "test", review=False)
+        c2 = kernel.build_contract(self.g, self.p, "public", "code", "b", "public", v, m, t, "test", review=False)
+        kernel.acquire_writer_lock(self.g, c1)
+        with self.assertRaises(kernel.RouteError):
+            kernel.create_job(self.g, c2)
+        jd = os.path.join(kernel.jobs_root(self.g, "public"), c1["id"])
+        os.makedirs(jd)
+        with open(os.path.join(jd, "result.md"), "w") as f:
+            f.write("partial output")
+        with self.assertRaises(kernel.RouteError):
+            kernel.create_job(self.g, c2)
+
+    def test_read_jobs_do_not_share_a_writer_lock(self):
+        for _ in range(2):
+            v, m, t = kernel.resolve(self.g, self.p, "public", "scout", "public")
+            c = kernel.build_contract(self.g, self.p, "public", "scout", "read", "public", v, m, t, "test", review=False)
+            kernel.create_job(self.g, c)
+        self.assertEqual(kernel._WRITER_LOCKS, {})
+
+    def test_exited_process_releases_os_lock(self):
+        v, m, t = kernel.resolve(self.g, self.p, "public", "code", "public")
+        c = kernel.build_contract(self.g, self.p, "public", "code", "edit", "public", v, m, t, "test", review=False)
+        lp = kernel._lock_path(self.g, c)
+        os.makedirs(os.path.dirname(lp))
+        script = "import fcntl,sys; f=open(sys.argv[1], 'w'); fcntl.flock(f, fcntl.LOCK_EX); f.write('exited-job'); f.flush()"
+        subprocess.run([sys.executable, "-c", script, lp], check=True)
+        kernel.create_job(self.g, c)
 
 
 class Council(Base):
@@ -333,6 +436,8 @@ class Council(Base):
         jd, status, outs, judge = kernel.council(self.g, self.p, "public", "public", "A or B?", None, interactive=False, approve_top=True)
         self.assertEqual(status, "judged")
         self.assertEqual(self.fake.calls[-1]["model"], "claude-fable-5-1")
+        with open(os.path.join(jd, "contract.json")) as f:
+            self.assertEqual(json.load(f)["authorization"]["top_model_approval"]["model"], "claude-fable-5-1")
 
     def test_council_private_domain_uses_configured_members(self):
         ans = json.dumps({"recommendation": "Do A", "confidence": "high", "reasoning": "r", "objections": []})
@@ -345,6 +450,24 @@ class Council(Base):
         self.fake.script = [("succeeded", ans), ("succeeded", "not json at all")]
         jd, status, outs, judge = kernel.council(self.g, self.p, "public", "public", "q", None, interactive=False)
         self.assertEqual(status, "blocked")
+
+    def test_council_records_declassification_and_source(self):
+        ans = json.dumps({"recommendation": "Do A", "confidence": "high", "reasoning": "r", "objections": []})
+        self.fake.script = [("succeeded", ans), ("succeeded", ans)]
+        declass = {"from": "private", "to": "sanitized", "by": "test operator"}
+        jd, _, _, _ = kernel.council(self.g, self.p, "work", "sanitized", "q", None, interactive=False, declass=declass, source="explicit request")
+        with open(os.path.join(jd, "contract.json")) as f:
+            auth = json.load(f)["authorization"]
+        self.assertEqual(auth["declassification"], declass)
+        self.assertEqual(auth["source"], "explicit request")
+
+    def test_unavailable_council_member_is_not_dispatched(self):
+        for entry in self.p["models"]:
+            if entry["id"] == "claude-sonnet-5":
+                entry["available"] = False
+        _, status, _, _ = kernel.council(self.g, self.p, "public", "public", "q", None, interactive=False)
+        self.assertEqual(status, "blocked")
+        self.assertNotIn("claude", [call["vendor"] for call in self.fake.calls])
 
 
 class Governance(Base):
@@ -375,7 +498,8 @@ class Governance(Base):
         s = json.loads(generate.settings(g, "work"))["permissions"]["deny"]
         for other in g["domains"]:
             if other != "work":
-                self.assertIn("Read(file_path:%s/%s/*)" % (self.hub, other), s)
+                self.assertIn("Read(/%s/%s/**)" % (self.hub, other), s)
+        self.assertFalse(any("file_path:" in rule for rule in s))
         self.assertFalse(any("/work/" in rule for rule in s))
 
     def test_generated_text_carries_operator_and_rules(self):
@@ -433,6 +557,16 @@ class Cli(Base):
         self.assertTrue(r.stdout.startswith("Orchestration: scout claude/claude-haiku-4-5-20251001"))
         self.assertFalse(os.path.exists(os.path.join(self.hub, "work", ".ai")))
 
+    def test_auto_dry_run_skips_classification(self):
+        import contextlib
+        import io
+        import runpy
+        from unittest.mock import patch
+        cli = runpy.run_path(os.path.join(HERE, "ai"), run_name="conclave_test")
+        with patch.object(kernel, "triage", side_effect=AssertionError("dry run called a model")), contextlib.redirect_stdout(io.StringIO()):
+            cli["main"](["auto", "task", "--dry-run", "--domain", "work"])
+        self.assertEqual(self.fake.calls, [])
+
     def test_refused_vendor_is_a_clean_error(self):
         r = self._ai("scout", "x", "--vendor", "grok", "--dry-run", cwd=os.path.join(self.hub, "work"))
         self.assertEqual(r.returncode, 2)
@@ -444,6 +578,50 @@ class Cli(Base):
         self.assertIn("pass --domain", r.stderr)
         r = self._ai("scout", "x", "--dry-run", "--domain", "work", cwd=tempfile.gettempdir())
         self.assertEqual(r.returncode, 0, r.stderr)
+
+
+class Integration(Base):
+    def test_claude_review_disables_tools_and_passes_schema(self):
+        from unittest.mock import patch
+        schema = verify.REVIEW_OUTPUT_SCHEMA
+        with patch.object(adapters, "_run", return_value=(0, '{"result":"a review"}', "", 0.1, None)) as run:
+            adapters.claude("example-model", "review", self.tmp, 10, no_tools=True, json_schema=schema)
+        args = run.call_args.args[0]
+        self.assertEqual(args[args.index("--tools") + 1], "")
+        self.assertIn("--strict-mcp-config", args)
+        self.assertEqual(json.loads(args[args.index("--json-schema") + 1]), schema)
+
+    def test_handoff_requires_approval_before_writing(self):
+        system = os.path.join(self.hub, "_system")
+        os.makedirs(os.path.join(system, "shared"))
+        os.makedirs(os.path.join(system, "router"))
+        shutil.copy(self.gov_path, os.path.join(system, "shared", "governance.json"))
+        shutil.copy(os.path.join(HERE, "policy.json"), os.path.join(system, "router", "policy.json"))
+        shutil.copytree(os.path.join(HERE, "..", "ops"), os.path.join(system, "ops"))
+        script = os.path.join(system, "ops", "handoff-to-vendor.sh")
+        result = subprocess.run(["bash", script, "codex", "continue"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("requires explicit approval", result.stderr)
+        self.assertFalse(os.path.exists(os.path.join(system, "handoffs")))
+        # Preparing a command is local; this flag never starts a model in the test.
+        result = subprocess.run(["bash", script, "--approve-top-model", "codex", "continue"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        handoffs = os.listdir(os.path.join(system, "handoffs"))
+        with open(os.path.join(system, "handoffs", handoffs[0])) as f:
+            self.assertIn("supplied --approve-top-model", f.read())
+
+    def test_lint_propagates_shellcheck_failure(self):
+        bindir = os.path.join(self.tmp, "bin")
+        os.mkdir(bindir)
+        checker = os.path.join(bindir, "shellcheck")
+        with open(checker, "w") as f:
+            f.write("#!/bin/sh\necho simulated-shellcheck-failure >&2\nexit 1\n")
+        os.chmod(checker, 0o755)
+        result = subprocess.run(["make", "-C", os.path.join(HERE, ".."), "lint"], capture_output=True, text=True,
+                                env=dict(os.environ, PATH=bindir + os.pathsep + os.environ["PATH"]))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("simulated-shellcheck-failure", result.stderr)
+        self.assertNotIn("not installed", result.stdout)
 
 
 if __name__ == "__main__":

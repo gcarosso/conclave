@@ -1,10 +1,10 @@
-# Examples
+# Example job records
 
-Two complete job records, exactly as the router writes them (paths replaced with `<hub>`).
+These are preserved records from the initial package, with paths replaced by `<hub>`. They illustrate the file format; they are not output from the current regression suite.
 
-| Directory | What it shows |
+| Directory | Provenance and behavior |
 |---|---|
-| `job-scout-pass/` | A real tier-1 `scout` job run through Claude: one attempt, the `nonempty` builtin check, `PASS`. Read `acceptance.json`, then `events.jsonl` (tokens, cost, elapsed), then `attempts/1/request.json` for the exact prompt. |
-| `job-write-review-repair-pass/` | A `write` job with cross-vendor review: Claude drafts, Codex reviews and **fails** the `goal-met` check with a located issue, Claude repairs with the reviewer's issues attached, Codex passes the repair. Four recorded calls (`1/` work, `1-review-codex/`, `2/` repair, `2-review-codex/`), `PASS`. Generated with the offline fake vendor, so the text is illustrative; the structure is real. |
+| `job-scout-pass/` | Captured Claude tier-1 scout call. One attempt passes the `nonempty` check. It demonstrates a live response record, not factual validation of that response. |
+| `job-write-review-repair-pass/` | Offline fixture using a fake vendor. A simulated Claude draft fails simulated Codex review, receives a repair, and passes a second review. Four call records show the sequence; no live cross-vendor execution is claimed. |
 
-Reading order for any job: `acceptance.json` → `verdict.json` → `events.jsonl` → `attempts/*/request.json` → `result.md`.
+Read `acceptance.json`, `verdict.json`, `events.jsonl`, then the attempt requests and responses. Writer and reviewer calls occupy separate directories. Model names and usage in historical records do not establish current account availability or billing.

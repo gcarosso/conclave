@@ -3,7 +3,7 @@
 #
 #   install-hooks.sh [--force] <repo> [<repo>...]
 #
-# pre-commit runs  publish-gate.sh --staged <repo>   (every added line and binary in the index)
+# pre-commit runs  publish-gate.sh --staged <repo>   (complete changed file blobs in the index)
 # pre-push   runs  publish-gate.sh --diff <repo> ... (every commit about to be pushed, per ref)
 #
 # Hooks call the gate by the absolute path of this checkout, resolved now; move the checkout and
@@ -46,7 +46,7 @@ write_hook() {  # write_hook <hooks dir> <name> <body>
 # Both hooks resolve the repository from git itself so they work from worktrees and subdirectories.
 PRE_COMMIT="#!/usr/bin/env bash
 $MARK
-# Installed by install-hooks.sh. Scans staged additions; a non-zero exit aborts the commit.
+# Installed by install-hooks.sh. Scans changed index blobs; a non-zero exit aborts the commit.
 GATE='$GATE'
 REPO=\"\$(git rev-parse --show-toplevel)\" || exit 1
 [ -x \"\$GATE\" ] || { echo \"publish-gate hook: gate not found at \$GATE (re-run install-hooks.sh)\"; exit 1; }

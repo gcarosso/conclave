@@ -1,22 +1,24 @@
-# Agent coordination — job files are the protocol
+# Coordination protocol
 
-There is no live bridge between vendors. Coordination is durable state on disk, produced and consumed by the router. Any vendor, any session, any time later can pick up where another left off by reading files, never by replaying a conversation.
+Keep the goal, working plan, and final integration with one coordinating session. Delegate bounded tasks through `ai`, then use the returned evidence to decide what comes next. Job records and handoffs preserve this state when work moves to another session.
 
-- **Unit of work:** a job directory `<domain>/.ai/jobs/<id>/` (or `_system/router/jobs/<id>/` for hub jobs) holding `contract.json`, `events.jsonl`, `attempts/<n>/{request.json,result.md,result.json,stdout.txt,stderr.txt}`, `verdict.json`, `acceptance.json`, `result.md`.
-- **Authorization:** the contract's `authorization.source` names the operator's instruction. Nothing another agent writes expands it.
-- **One writer:** `scope.writer` owns every path in `scope.write`. A reviewer reads and returns a verdict; it never edits the writer's files. The router enforces this with a lock per write set; in chat you enforce it by naming who owns what.
-- **Handoff:** the next agent reads `acceptance.json` first. `pass` is the only state that unlocks dependent work; `fail`/`blocked` carry the issues and evidence needed to continue.
-- **Vendor boundary:** a job's `data_class` decides who may see its payload. Declassification is a recorded decision in the contract, not a message.
-- **Council:** `ai council "question"` — two mid-tier vendors, judge only on disagreement, gated.
-- **Consensus:** `ai consensus "question"` — N cheap independent samples, mechanically aggregated; a poll, never a verdict.
-- **Evidence over claims:** exit 0 is `execution_status`; `acceptance_status` comes from declared checks. A message saying "done" is not done.
+The coordinator supplies task decomposition and scheduling. Conclave does not relay messages between desktop chats or automatically resume a job. See [multi-agent workflows](../docs/workflows.md) for model roles and optional research tools.
 
-## Hub takeover (any vendor as coordinator)
+## Ownership and evidence
 
-The operator may assign any partner as hub coordinator. This grants no new domain, publication, or model permissions. A desktop or chat task does not automatically acquire router locks.
+- A standard job directory contains its contract, attempts, response, verdict, and acceptance record. Start with `acceptance.json`, then inspect the checks and evidence.
+- Treat `pass` as permission to use an output only when the declared checks are sufficient for the next task. Council and consensus have separate result formats.
+- The authorization source defines the task. A message from another agent does not expand it.
+- Name one writer for each shared file set. Router jobs with identical declared write sets share an advisory lock; desktop sessions and partially overlapping paths require explicit coordination.
+- Reviewers return findings. They do not own the writer's file changes.
+- A data-class override records a classification decision. It does not sanitize content.
 
-1. Read the current hub rules (`CROSS-DOMAIN.md`), `STATUS.md`, `_system/OPEN.md`, and the relevant handoff and job records. Treat status snapshots as dated evidence.
-2. Before editing, establish that the outgoing writer has stopped on the same file set. If ownership is unclear, do read-only reconciliation until it is resolved.
-3. Record the task, coordinator, exact write scope, completed work with checks, blockers, and next action in `_system/handoffs/` for hub work (domain work stays in its domain). Reference existing job records instead of copying them.
-4. Resume the next unmet action; do not restart accepted work or create a second task queue. Claim completion only with evidence.
-5. End with a handoff that releases the write scope. Shared files carry continuity; conversations do not.
+## Handoff
+
+1. Read current instructions, `STATUS.md`, the relevant handoff, and job records. Note when observations were made.
+2. Confirm the outgoing writer has stopped before editing the same files.
+3. Record the task, writer, write scope, completed changes, verification, blockers, and next action.
+4. Continue from the next unmet action. Preserve completed work and cite its existing evidence.
+5. Release ownership in the closing handoff.
+
+Hub handoffs belong in `_system/handoffs/`; domain handoffs stay in the domain. `ops/session-handoff.sh` writes a workspace snapshot that can be supplemented with task-specific evidence. `/wrap` adds session inventory and archive checks. A handoff names the next action; executing it starts new work under the current authorization.

@@ -1,173 +1,61 @@
-# Concepts: the reasoning methodology
+# Design rationale
 
-Conclave is a small set of mechanisms, each answering one failure mode of agentic work. This page explains each mechanism, the reasoning method it implements, why that method works, and what it confers. Read it once; the rest of the docs assume it.
+Conclave gives a coordinating session a common way to dispatch LLM tasks and inspect their results. Its main design choice is to keep execution, evaluation, and acceptance as separate steps. For task decomposition, model roles, efficiency tradeoffs, and optional research tools, start with [multi-agent workflows](workflows.md).
 
-## 1. Contract-first execution
+## Define the evaluation target
 
-**The failure.** Agents hallucinate and over-engineer when success is undefined, and quietly cut corners when failure is undefined. "Improve this" gets a fluent guess.
+A job contract records a goal, scope, authorization, resource limits, and checks. The kernel evaluates those checks and records the result. This gives a downstream reader a specific basis for deciding whether to use an output.
 
-**The mechanism.** Every job starts as a contract (`contract.json`, validated against `router/contract.schema.json`): the goal, the domain, the data class, the writer, what may be read and written, what side effects are allowed, who authorized it, the limits, and the **checks** that define done. Checks are of three kinds:
+The CLI currently builds a default contract. It does not parse instructions such as “run pytest” into executable checks. Custom `builtin`, `command`, and `review` checks are supported by the Python kernel API; a contract-file CLI and resumable jobs are not implemented.
 
-| kind | what it is | who decides |
-|---|---|---|
-| `builtin` | `nonempty`, `contains:`, `not_contains:`, `regex:`, `file_exists:`, `min_words:` | the kernel, deterministically |
-| `command` | any shell command run in the job directory; exit 0 passes | the kernel, deterministically |
-| `review` | a rule in prose, judged by a fresh-context reviewer | another vendor, with evidence |
+The default artifact is the model's returned text. A hash binds a verdict to that text. File edits, datasets, and test results need their own verification; hashing a response does not verify the files it describes.
 
-**Why it works.** The FAILURE clause is the innovation (this is the *Prompt Contracts* pattern made executable). A goal with a checkable "done means" gives the reviewer something to reject and the kernel something to compute. A prompt that cannot state its own acceptance check is not ready to run.
+## Separate model calls from acceptance
 
-**What it confers.** Reproducibility (the contract is on disk), auditability (authorization is structured data), and the separation that makes everything else possible: `execution_status` (the process ran) is never confused with `acceptance_status` (the checks passed).
+Adapters report whether the subprocess or API request succeeded. The verifier reports whether the declared checks passed. An execution failure blocks evaluation; a completed call can still fail a check.
 
-## 2. Verdicts, not exit codes
+This distinction is useful when a response is empty, omits required material, or lacks enough evidence to assess. It cannot compensate for a weak check: a nonempty response can be wrong.
 
-**The failure.** Most tooling reports success when the subprocess exits 0. A refusal, a partial result, or an empty file all exit 0.
+## Review with another LLM
 
-**The mechanism.** `verify.py` evaluates the contract's checks against the artifact and writes a verdict (`verdict.json`, validated against `router/verdict.schema.json`): per-check status with evidence, a list of issues with severity and a proposed fix, and the artifact's SHA-256 so the verdict is bound to exactly what was judged. The decision rule is strict: any `blocked` check → `blocked`; any `fail` → `fail`; otherwise `pass`. An execution failure blocks every check. The **worker never awards PASS**; the kernel does, from the verdict.
+For `write` and `code`, a model from another provider receives the goal, review rules, and response in a new call. It returns a status and evidence for each rule, plus issues that can guide a repair. The writer's previous conversation is not forwarded.
 
-**Why it works.** A verdict is falsifiable: it names the check, the status and the evidence. "Trust me" cannot pass.
+Changing the reviewer can expose different errors, but model diversity does not establish statistical independence. Models can share failure modes, and reviewers can accept unsupported claims or respond to instructions embedded in the artifact. The package has no benchmark establishing an accuracy gain from review across providers.
 
-**What it confers.** Exit 0 from `ai` means the declared checks passed. The last line of every job is `Acceptance: PASS|FAIL|BLOCKED · <job dir>`; `acceptance.json` in the job folder is the durable record the next agent reads first.
+A failed reviewer invocation can fall back to another eligible vendor. A valid failing verdict is retained. Missing, duplicate, or malformed review checks block acceptance.
 
-## 3. Fresh-context cross-vendor review
+## Bound retries and escalation
 
-**The failure.** A model reviewing its own output shares its blind spots and its sunk cost. Same-model review mostly agrees with itself.
+A normal job allows one repair and at most one escalation by default. Escalation requires a failing review with `capability_deficit: true`, an available model in the next tier, remaining call budget, and any required approval. The reviewer's flag is a judgment about the failure, not a measurement of model capability.
 
-**The mechanism.** When a contract has a `review` check (the default for `write` and `code`), the kernel picks a reviewer from a *different* vendor (`reviewer_for` in `policy.json`: Claude's work is reviewed by Codex and vice versa), subject to the same data-class eligibility as the writer. The reviewer sees only the goal, the checks and the artifact, never the writer's reasoning or files, and must return structured JSON: one status per check with a quote or line as evidence, plus issues. Free-text verdicts are rejected; a reviewer that fails to execute is replaced by the next eligible vendor, but a reviewer's *judgment* is never overridden by fallback. Artifacts over the review size limit block instead of being silently truncated.
+The call budget includes writer, reviewer, fallback, repair, and escalation invocations. A per-call timeout limits each adapter invocation. Token consumption, billing, child-process behavior, and total wall time are not controlled by a global cost or deadline budget.
 
-**Why it works.** Fresh eyes catch what the implementer misses, for the same reason human code review works. Using a different model family also decorrelates errors: two models trained differently are less likely to share the same confident mistake.
+## Route by policy
 
-**What it confers.** A 2–3× quality lift on written and coded artifacts in practice, and a machine-readable list of what is wrong, which feeds the next mechanism.
+Roles specify a default vendor, tier, permissions, and review setting. Vendor ladders map tiers to model IDs. This lets an operator change models without changing every task command.
 
-## 4. Bounded repair and gated escalation
+Choose roles around the required capability: reasoning and planning, code execution, multimodal input, or current-source retrieval. Model selection alone does not supply a missing tool or input format. For example, Conclave's Gemini adapter accepts text; video understanding needs a separate integration. The [workflow guide](workflows.md#choose-models-by-role) maps these requirements to model roles and current adapter support.
 
-**The failure.** Retry loops that run until the budget is gone, or that jump to the most expensive model at the first sign of trouble.
+The router checks configured eligibility and availability; it does not optimize cost or select a model from measured capability. `ai auto` adds a model-based classification step. Explicit role selection remains useful when the task or execution constraints are already clear.
 
-**The mechanism.** On `fail`, the kernel sends the writer its own artifact plus the reviewer's issues and asks for a complete corrected version, once (`limits.repairs`, default 1). If that still fails **and** the reviewer marked an issue `capability_deficit: true` (the failure needs a stronger model, not a correction), the kernel escalates one tier (`limits.escalations`, default 1), passing through the top-model gate if the next tier is gated. Total calls are capped (`limits.calls`). Every step is an event in `events.jsonl`.
+## Compare recommendations
 
-**Why it works.** Refinement with explicit stop conditions converges or stops; escalation on the reviewer's evidence rather than on mere failure keeps expensive models for the cases that need them.
+`council` requests two recommendations separately, then optionally asks a judge to resolve disagreement. The member calls run sequentially and do not receive each other's answers. Agreement uses case-insensitive text equality plus an empty objections list, so equivalent wording can still trigger a judge.
 
-**What it confers.** Predictable cost per job, no runaway loops, and a trail that shows exactly why a top model was or was not used.
+`consensus` runs samples concurrently across eligible vendors and prompt framings. It groups recommendations and reports the modal share, splits, self-reported confidence, and submitted ideas. Shared training data and changed prompts make this a structured comparison rather than an independent sampling experiment. Modal share and confidence are not probabilities that an answer is correct. “Outliers” collects distinct submitted idea strings; it does not measure statistical rarity.
 
-## 5. Capability-fit routing: roles, tiers, ladders
+## Keep state inspectable
 
-**The failure.** Vendor loyalty and leaderboard prestige: sending everything to the biggest model because it is there.
+Contracts, attempts, responses, and verdicts remain on disk. Handoffs can point to those records, making it possible for another session to continue the work after reviewing the evidence. Continuing is a manual workflow; the package has no scheduler, dependency graph, or automatic resume command.
 
-**The mechanism.** A **role** (`scout`, `plan`, `code`, `write`, `review`, `live`, `longdoc`, …) carries a default vendor, a default **tier** (1 cheap, 2 workhorse, 3 top), a turn budget, a sandbox mode and whether review is on by default. Each vendor has a **ladder** mapping tiers to concrete model ids. The router resolves role + flags into one (vendor, model, tier), refusing unknown or unavailable ids: `policy.models` is an allowlist, and `ai smoke` re-verifies it.
+For shared edits, an advisory OS lock excludes another router job with the same declared write set in that domain. It does not lock an editor, a raw vendor CLI, or a partially overlapping write set.
 
-**Why it works.** Most work is tier-2 work; most lookups are tier-1 work. Naming the role instead of the model lets the policy, not the moment, decide.
+## Make boundaries explicit
 
-**What it confers.** The smallest adequate model by default, one place to update when a model id changes, and vendor portability: swap a ladder and every role follows.
+Governance generates instructions and Claude tool-deny settings. Routing restricts which vendor may receive a job's payload. These controls operate at different levels; generated instructions and empty working directories do not provide process isolation.
 
-## 6. Scout-then-specialist triage (`ai auto`)
+The publication gate searches configured regex patterns in raw file bytes and Git blobs. It blocks on matches and scan errors, but does not decode archives or identify every secret. The registry likewise reports specific observations: a CLI version probe does not test authentication or validate every model in a policy file.
 
-**The failure.** Users who don't know the roles either over-spend (everything at tier 3) or under-spend (a code fix at tier 1).
+## Related work
 
-**The mechanism.** `ai auto "task"` makes one tier-1 call with a classification-only prompt and a JSON schema, gets `{role, tier, review}`, and then runs the task through the normal path with those settings. Flags you pass explicitly win over the triage.
-
-**Why it works.** Classification is cheap and models are good at it; the expensive call is then right-sized.
-
-**What it confers.** A single entry point that still produces a proper contract and verdict.
-
-## 7. Council: independent advisors, judge on disagreement
-
-**The failure.** One model, one answer, no way to tell whether it is great or mediocre; or a "debate" where the second model anchors on the first.
-
-**The mechanism.** `ai council "question"` asks two mid-tier vendors the same question **independently** (neither sees the other's answer), each returning a recommendation, a confidence, reasoning and blocking objections as JSON. If the recommendations match and neither raised an objection, the council reports `agree` and stops. Otherwise a tier-3 judge, behind the approval gate, is given both answers and asked to resolve the disputed propositions and say what to do; the council reports `judged`, or `disagree` if the judge was refused.
-
-**Why it works.** Independence removes anchoring; disagreement between two good models is a stronger signal than either one's confidence; adjudication is spent only where there is something to adjudicate.
-
-**What it confers.** Decision support that is cheap in the common case and strong in the hard case, with the whole exchange on disk.
-
-## 8. Stochastic consensus: a poll, never a verdict
-
-**The failure.** A single run of a strategic question reflects one sample of a stochastic process, plus whatever framing you happened to use.
-
-**The mechanism.** `ai consensus "question" --n 5 --options "A;B;C"` runs N tier-1 samples in parallel, cycling ten **framings** (conservative analyst, first-principles, end-user view, second-order effects, …) and rotating over every eligible vendor. Each returns a pick, a 1–10 confidence, reasons and one "idea most would miss". Aggregation is mechanical: the **mode** (with share and mean confidence), the **splits**, and the **outliers**. Fewer than half valid samples blocks; a mode under 60% is `split`.
-
-**Why it works.** Polling ten experts beats asking one. The mode filters individual hallucinations; the splits reveal genuine judgment calls; the outliers surface ideas a single run would never show. Vendor rotation decorrelates biases the way cross-vendor review does.
-
-**What it confers.** Breadth for the price of cheap calls, and honest output: it is labelled a poll because that is what it is.
-
-## 9. Least context: data classes and sandboxing
-
-**The failure.** "Allowed in the domain" is read as "safe to receive every file in the domain", and prompt-only APIs are handed working directories they never needed.
-
-**The mechanism.** Every domain has a default **data class** (`private`, `sanitized`, `public`); every class lists the vendors that may see it; a domain may further restrict its vendors. Eligibility is the intersection. Raising a payload's class for one task (`--data-class sanitized`) writes a **declassification record** into the contract: from, to, by whom, when, and the stated reason. Prompt-only vendors (Grok, Gemini) always run from an empty sandbox directory under the attempt: the prompt is their whole payload.
-
-**Why it works.** Need-to-know applied to models. The decision to widen exposure is deliberate and recorded, not implied.
-
-**What it confers.** You can open private domains to more vendors later without touching the mechanism, and every widening is auditable.
-
-## 10. The top-model gate
-
-**The failure.** Expensive or high-capability models get used by default, or by a script nobody reviewed.
-
-**The mechanism.** Models marked `requires_approval` in `policy.json` (and listed in `governance.top_model_gate`) need the operator's approval per use: `--approve-top-model` in scripts, or an interactive y/N. The approval record (model, approver, via, timestamp) is written into `contract.authorization.top_model_approval`. Non-interactive runs without the flag are refused, including escalations and council judges.
-
-**Why it works.** The expensive model is not the trustworthy one; the check is. Gating puts the human where the cost and the stakes are.
-
-**What it confers.** Cost control and an audit trail from the same field.
-
-## 11. One writer per write set
-
-**The failure.** Two agents editing the same files produce a merge, not a result.
-
-**The mechanism.** The contract's `scope.write` is hashed into a lock file created with `O_EXCL`. A second job on the same write set is refused while the first is running; locks of finished jobs are reclaimed automatically. Councils and consensus runs release their lock immediately: they advise, they own nothing.
-
-**Why it works.** Mutual exclusion is the oldest coordination primitive because it is the one that actually works.
-
-**What it confers.** Safe parallelism across vendors and sessions without a coordinator process.
-
-## 12. Generated governance
-
-**The failure.** The same rule written five ways in `CLAUDE.md`, `AGENTS.md`, a README, a policy file and a handoff; each vendor reads a different version.
-
-**The mechanism.** `shared/governance.json` is canonical. `router/generate.py` renders `CROSS-DOMAIN.md`, the hub-root and per-domain `CLAUDE.md` (Claude Code) and `AGENTS.md` (Codex), and per-domain `.claude/settings.json` deny rules that block every sibling domain. Generated files carry a header saying so. `--check` reports drift; the cockpit runs it after every job.
-
-**Why it works.** One source, many surfaces; hand edits become visible instead of silently diverging.
-
-**What it confers.** Materially equivalent governance for every vendor, and technical isolation for the one vendor (Claude Code) whose CLI supports deny rules.
-
-## 13. Fail-closed publication
-
-**The failure.** A scanner that prints "clean" when `grep` errored, skips dotfiles, or ignores binaries; hooks that run at push time only, after private content is already in history.
-
-**The mechanism.** `gate/publish-gate.sh` scans a whole tree (tracked and untracked, dotfiles included), the staged index (pre-commit), or every commit in a push range (pre-push), for the extended-regex markers you list. Binaries are checked with `strings`. Any scan error, git error, unresolvable range, or missing markers file **blocks**. Exceptions are exact lines in an allowlist file, reviewed by a human. Twenty-two fixtures pin the behavior.
-
-**Why it works.** A control that can fail open is not a control. The gate's only two outcomes are "clean, and here is what I scanned" and "blocked, and here is why".
-
-**What it confers.** The invariant "no private marker is ever committed to a public repo", enforced at both commit and push.
-
-## 14. Observed state over declared state
-
-**The failure.** A static inventory that describes expired connections, renamed models, and unloaded jobs as current.
-
-**The mechanism.** `registry/generate.py` probes each vendor CLI, lists MCP servers and skills from their config files, checks scheduled jobs, and copies the model catalog with its gate flags. Every probe records its own `observed_at` and `status`; a failed probe is recorded as failed, never omitted. `registry.json` is the source; `REGISTRY.md` is a view. The audit script snapshots, regenerates, diffs and returns the issue count as its exit code.
-
-**Why it works.** Routing and troubleshooting decisions made on stale capability data are wrong in ways that are hard to see.
-
-**What it confers.** A dated, honest picture of what is actually reachable.
-
-## 15. Derived attention
-
-**The failure.** A dashboard you have to read to know whether anything is wrong.
-
-**The mechanism.** `ops/cockpit.sh` renders `STATUS.md` from live facts (jobs, vendors, router health, recent verdicts, public repos, open items) and then derives an **attention list** from those facts: unloaded jobs, failed probes, failing tests, drift, failed fixtures, failed or blocked jobs, unpushed commits. The list is at the top. A desktop notification fires only when the list changes.
-
-**Why it works.** Conditions computed from facts are checkable; a notification on delta is one you will read.
-
-**What it confers.** One glance says whether anything needs you.
-
-## 16. Coordination through artifacts
-
-**The failure.** Continuity that lives in a chat transcript: the next session, or the next vendor, has to reconstruct it, dead ends included.
-
-**The mechanism.** The job folder is the protocol (`coordination/PROTOCOL.md`): contract, attempts, verdict, acceptance. The next agent reads `acceptance.json` first; only `pass` unlocks dependent work. Handoffs (`ops/session-handoff.sh`, `ops/handoff-to-vendor.sh`, the `/wrap` skill) record goal, changed paths, evidence, decisions, open items and the next command, on disk, in the domain the work belongs to.
-
-**Why it works.** Files outlive contexts and cross vendors; conversations do neither.
-
-**What it confers.** Any vendor can take over any job, and the evidence that it was done survives the session that did it.
-
-## Where these come from
-
-Several of these mechanisms are executable forms of patterns that circulate as prompt-level techniques: prompt contracts with explicit failure clauses, subagent verification loops with a fresh reviewer, stochastic multi-agent consensus with framing variation, and Andrej Karpathy's LLM-council idea of independent answers plus adjudication. Conclave's contribution is to move them out of the prompt and into a kernel with schemas, limits, locks, an audit trail and tests, so that the behavior is enforced rather than requested.
+The package combines explicit task specifications, separate evaluation, bounded retries, ensemble comparison, advisory locks, and file-based coordination. Its council interface was informed by [Andrej Karpathy's LLM Council](https://github.com/karpathy/llm-council). See the [workflow guide](workflows.md#delegation-review-and-council) for the distinction between that project's peer ranking and Conclave's two-member council.

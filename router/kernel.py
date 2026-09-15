@@ -1,8 +1,10 @@
 """Contracts, routing, job state, enforcement. No vendor calls here except through adapters.run."""
 import datetime
+import fcntl
 import json
 import os
 import sys
+import threading
 
 import adapters
 import verify
@@ -17,6 +19,23 @@ INDEX_PATH = os.path.join(HERE, "jobs", "index.jsonl")
 
 class RouteError(Exception):
     pass
+
+
+class CallBudget:
+    """Count adapter invocations, including reviews, fallback, and retries."""
+    def __init__(self, limit):
+        self.limit = limit
+        self.used = 0
+        self.lock = threading.Lock()
+
+    def reserve(self):
+        with self.lock:
+            if self.used >= self.limit:
+                raise RouteError("call budget exhausted (%s)" % self.limit)
+            self.used += 1
+
+
+_WRITER_LOCKS = {}
 
 
 def now():
@@ -101,14 +120,20 @@ def resolve(g, p, domain, role, data_class, vendor=None, model=None, tier=None, 
     vendor = vendor or r["default_vendor"]
     if vendor not in allowed:
         raise RouteError("blocked: data_class=%s in %s admits only %s; %s refused" % (data_class, domain, "/".join(allowed) or "nobody", vendor))
-    tier = int(tier or r["default_tier"])
+    tier = int(tier if tier is not None else r["default_tier"])
+    if tier not in (1, 2, 3) or (max_tier is not None and int(max_tier) not in (1, 2, 3)):
+        raise RouteError("tier and max-tier must be 1, 2, or 3")
     if max_tier is not None and tier > int(max_tier):
+        if model:
+            raise RouteError("model %s exceeds max-tier %s" % (model, max_tier))
         tier = int(max_tier)
     if not model:
-        model = p["ladders"][vendor][str(tier)]
+        model = p["ladders"].get(vendor, {}).get(str(tier))
         m = cat.get(model)
         if not m or not m.get("available", False):
             raise RouteError("ladder %s tier %s -> %s is not an available model" % (vendor, tier, model))
+        if m["vendor"] != vendor:
+            raise RouteError("ladder %s points to model owned by %s" % (vendor, m["vendor"]))
     return vendor, model, tier
 
 
@@ -176,42 +201,32 @@ def _lock_path(g, contract):
 
 
 def acquire_writer_lock(g, contract):
-    """One writer per write set: an O_EXCL lock file naming the owning job. Stale locks (finished jobs) are reclaimed."""
+    """Hold an advisory OS lock for the job. Process exit releases it; the file remains."""
+    if contract["scope"]["write"] == ["result.md"]:
+        return None  # result.md is local to this job, not a shared domain write
     lp = _lock_path(g, contract)
     os.makedirs(os.path.dirname(lp), exist_ok=True)
-    for _ in range(3):
-        try:
-            fd = os.open(lp, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            with os.fdopen(fd, "w") as f:
-                f.write(contract["id"])
-            return lp
-        except FileExistsError:
-            try:
-                with open(lp) as f:
-                    owner = f.read().strip()
-            except FileNotFoundError:
-                continue
-            ojd = os.path.join(jobs_root(g, contract["domain"]), owner)
-            finished = os.path.exists(os.path.join(ojd, "acceptance.json")) or os.path.exists(os.path.join(ojd, "result.md")) or not os.path.exists(ojd)
-            if finished:
-                try:
-                    os.unlink(lp)
-                except FileNotFoundError:
-                    pass
-                continue
-            raise RouteError("write set locked by running job %s (%s)" % (owner, ", ".join(contract["scope"]["write"])))
-    raise RouteError("could not acquire writer lock for %s" % ", ".join(contract["scope"]["write"]))
+    handle = open(lp, "a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.seek(0)
+        owner = handle.read().strip() or "another process"
+        handle.close()
+        raise RouteError("write set locked by running job %s" % owner)
+    handle.seek(0)
+    handle.truncate()
+    handle.write(contract["id"])
+    handle.flush()
+    _WRITER_LOCKS[(lp, contract["id"])] = handle
+    return lp
 
 
 def release_writer_lock(g, contract):
     lp = _lock_path(g, contract)
-    try:
-        with open(lp) as f:
-            owner = f.read().strip()
-        if owner == contract["id"]:
-            os.unlink(lp)
-    except FileNotFoundError:
-        pass
+    handle = _WRITER_LOCKS.pop((lp, contract["id"]), None)
+    if handle is not None:
+        handle.close()
 
 
 def create_job(g, contract):
@@ -239,25 +254,33 @@ def settings_for(g, domain):
     return s if os.path.exists(s) else None
 
 
-def attempt(g, p, contract, jd, n, vendor, model, tier, prompt, purpose="work"):
+def attempt(g, p, contract, jd, n, vendor, model, tier, prompt, purpose="work", budget=None, json_schema=None):
     """One vendor call, fully recorded under attempts/<n>/. n is an int for work/repair/escalation attempts
     and a string such as "1-review-codex" for the reviewer call that judges attempt 1."""
-    r = p["roles"][contract["role"]]
+    r = p["roles"]["review" if purpose == "review" else contract["role"]]
     ad = os.path.join(jd, "attempts", str(n))
     os.makedirs(ad, exist_ok=True)
     cwd = domain_dir(g, contract["domain"]) if contract["domain"] != "_system" else SYSTEM
-    # Vendors that only receive a prompt (no local CLI with a sandbox) never get a domain as working
-    # directory: the prompt is their whole payload, so they run in an empty sandbox under the attempt.
-    if vendor in adapters.PROMPT_ONLY_VENDORS:
+    # An empty working directory reduces incidental context; it is not an OS read boundary.
+    if vendor in adapters.PROMPT_ONLY_VENDORS or purpose == "review":
         cwd = os.path.join(ad, "sandbox")
         os.makedirs(cwd, exist_ok=True)
     with open(os.path.join(ad, "request.json"), "w") as f:
         json.dump({"purpose": purpose, "vendor": vendor, "model": model, "tier": tier, "cwd": cwd, "prompt": prompt, "at": now()}, f, indent=2)
     event(jd, "dispatch", attempt=n, purpose=purpose, vendor=vendor, model=model, tier=tier)
-    env = adapters.run(vendor, model, prompt, cwd, contract["limits"]["seconds"],
-                       sandbox=r["codex_sandbox"], network="network" in contract["scope"]["effects"],
-                       settings=settings_for(g, contract["domain"]), max_turns=r["max_turns"],
-                       web_search=(contract["role"] == "live"))
+    try:
+        resolve(g, p, contract["domain"], contract["role"], contract["data_class"], vendor=vendor, model=model)
+        approval = contract["authorization"].get("top_model_approval") or {}
+        gate_check(g, p, model, approval.get("model") == model, False)
+        if budget:
+            budget.reserve()
+        env = adapters.run(vendor, model, prompt, cwd, contract["limits"]["seconds"],
+                           sandbox=r["codex_sandbox"], network=purpose != "review" and "network" in contract["scope"]["effects"],
+                           settings=settings_for(g, contract["domain"]), max_turns=r["max_turns"],
+                           json_schema=json_schema, no_tools=(purpose == "review"),
+                           web_search=(contract["role"] == "live" and purpose != "review"))
+    except RouteError as exc:
+        env = adapters.envelope(error=str(exc))
     with open(os.path.join(ad, "stdout.txt"), "w") as f:
         f.write(env.pop("raw_stdout", ""))
     with open(os.path.join(ad, "stderr.txt"), "w") as f:
@@ -271,7 +294,7 @@ def attempt(g, p, contract, jd, n, vendor, model, tier, prompt, purpose="work"):
     return env, ad
 
 
-def reviewer_callable(g, p, contract, jd, n, writer_vendor, tier):
+def reviewer_callable(g, p, contract, jd, n, writer_vendor, tier, budget=None):
     """Fresh-context reviewer of a different vendor, subject to the same eligibility. None if nobody eligible."""
     pref = p["reviewer_for"].get(writer_vendor, "claude")
     allowed = eligible_vendors(g, contract["domain"], contract["data_class"])
@@ -279,20 +302,20 @@ def reviewer_callable(g, p, contract, jd, n, writer_vendor, tier):
     if not candidates:
         return None, None
     rtier = min(int(tier), 2)
-    chosen = {"v": candidates[0], "m": p["ladders"][candidates[0]][str(rtier)]}
+    chosen = {"vendor": "none", "model": "none"}
 
     def call(prompt, schema):
         # fall through to the next eligible vendor only on execution failure (auth, timeout, empty), never on a verdict
         env = None
         for v in candidates:
             m = p["ladders"][v][str(rtier)]
-            env, _ = attempt(g, p, contract, jd, "%s-review-%s" % (n, v), v, m, rtier, prompt, purpose="review")
+            env, _ = attempt(g, p, contract, jd, "%s-review-%s" % (n, v), v, m, rtier, prompt, purpose="review", budget=budget, json_schema=schema)
             if env["execution_status"] == "succeeded":
-                chosen["v"], chosen["m"] = v, m
+                chosen["vendor"], chosen["model"] = v, m
                 break
             event(jd, "reviewer-fallback", failed=v, reason=(env.get("error") or "")[:160])
         return env
-    return call, (chosen["v"], chosen["m"])
+    return call, chosen
 
 
 def finalize(jd, contract, verdict, attempts_meta):
@@ -312,46 +335,48 @@ def finalize(jd, contract, verdict, attempts_meta):
     return acc
 
 
-def run_job(g, p, contract, jd, vendor, model, tier, prompt, approve_top=False, interactive=True, on_progress=None):
+def run_job(g, p, contract, jd, vendor, model, tier, prompt, approve_top=False, interactive=True, on_progress=None, max_tier=None):
     """Execute → verify → (repair) → (escalate) → accept. Returns (final_text, acceptance, meta)."""
-    calls = 0
+    budget = CallBudget(contract["limits"]["calls"])
     n = 1
     meta = []
-    env, ad = attempt(g, p, contract, jd, n, vendor, model, tier, prompt)
-    calls += 1
+    env, ad = attempt(g, p, contract, jd, n, vendor, model, tier, prompt, budget=budget)
     meta.append({"attempt": n, "purpose": "work", "vendor": vendor, "model": model, "execution_status": env["execution_status"]})
     text = env.get("text") or ""
     rev, rinfo = (None, None)
     if any(c["kind"] == "review" for c in contract["checks"]):
-        rev, rinfo = reviewer_callable(g, p, contract, jd, n, vendor, tier)
+        rev, rinfo = reviewer_callable(g, p, contract, jd, n, vendor, tier, budget=budget)
+    with open(os.path.join(jd, "result.md"), "w") as f:
+        f.write(text)
     verdict, acc = verify.evaluate(contract, text, jd, ad, reviewer=rev, execution_status=env["execution_status"])
     if rinfo:
-        verdict["reviewer"] = {"vendor": rinfo[0], "model": rinfo[1]}
+        verdict["reviewer"] = dict(rinfo)
     if on_progress:
         on_progress("attempt %d %s → %s" % (n, env["execution_status"], acc))
 
     # bounded repair
     repairs = contract["limits"]["repairs"]
-    while acc == "fail" and repairs > 0 and calls < contract["limits"]["calls"]:
+    while acc == "fail" and repairs > 0 and budget.used < budget.limit:
         repairs -= 1
         n += 1
         issues = "\n".join("- [%s] %s%s" % (i["severity"], i["problem"], (" → " + i["fix"]) if i.get("fix") else "") for i in verdict["issues"]) or "- checks failed: " + "; ".join("%s (%s)" % (c["id"], c["evidence"]) for c in verdict["checks"] if c["status"] == "fail")
         rprompt = prompt + "\n\nA fresh-context reviewer rejected the previous attempt. Fix every issue below and return the complete corrected artifact:\n" + issues + "\n\nPREVIOUS ARTIFACT\n-----\n" + text
-        env, ad = attempt(g, p, contract, jd, n, vendor, model, tier, rprompt, purpose="repair")
-        calls += 1
+        env, ad = attempt(g, p, contract, jd, n, vendor, model, tier, rprompt, purpose="repair", budget=budget)
         meta.append({"attempt": n, "purpose": "repair", "vendor": vendor, "model": model, "execution_status": env["execution_status"]})
         text = env.get("text") or ""
         if any(c["kind"] == "review" for c in contract["checks"]):
-            rev, rinfo = reviewer_callable(g, p, contract, jd, n, vendor, tier)
+            rev, rinfo = reviewer_callable(g, p, contract, jd, n, vendor, tier, budget=budget)
+        with open(os.path.join(jd, "result.md"), "w") as f:
+            f.write(text)
         verdict, acc = verify.evaluate(contract, text, jd, ad, reviewer=rev, execution_status=env["execution_status"])
         if rinfo:
-            verdict["reviewer"] = {"vendor": rinfo[0], "model": rinfo[1]}
+            verdict["reviewer"] = dict(rinfo)
         if on_progress:
             on_progress("repair %d %s → %s" % (n, env["execution_status"], acc))
 
     # bounded escalation: only when the reviewer says a stronger model is needed
     escalations = contract["limits"]["escalations"]
-    if acc == "fail" and escalations > 0 and any(i.get("capability_deficit") for i in verdict["issues"]) and int(tier) < 3 and calls < contract["limits"]["calls"]:
+    if acc == "fail" and escalations > 0 and any(i.get("capability_deficit") for i in verdict["issues"]) and int(tier) < (max_tier or 3) and budget.used < budget.limit:
         ntier = int(tier) + 1
         nmodel = p["ladders"][vendor][str(ntier)]
         try:
@@ -366,15 +391,16 @@ def run_job(g, p, contract, jd, vendor, model, tier, prompt, approve_top=False, 
                     json.dump(contract, f, indent=2)
             n += 1
             event(jd, "escalate", from_tier=tier, to_tier=ntier, model=nmodel)
-            env, ad = attempt(g, p, contract, jd, n, vendor, nmodel, ntier, prompt, purpose="escalation")
-            calls += 1
+            env, ad = attempt(g, p, contract, jd, n, vendor, nmodel, ntier, prompt, purpose="escalation", budget=budget)
             meta.append({"attempt": n, "purpose": "escalation", "vendor": vendor, "model": nmodel, "execution_status": env["execution_status"]})
             text = env.get("text") or ""
             if any(c["kind"] == "review" for c in contract["checks"]):
-                rev, rinfo = reviewer_callable(g, p, contract, jd, n, vendor, ntier)
+                rev, rinfo = reviewer_callable(g, p, contract, jd, n, vendor, ntier, budget=budget)
+            with open(os.path.join(jd, "result.md"), "w") as f:
+                f.write(text)
             verdict, acc = verify.evaluate(contract, text, jd, ad, reviewer=rev, execution_status=env["execution_status"])
             if rinfo:
-                verdict["reviewer"] = {"vendor": rinfo[0], "model": rinfo[1]}
+                verdict["reviewer"] = dict(rinfo)
             model, tier = nmodel, ntier
 
     with open(os.path.join(jd, "result.md"), "w") as f:
@@ -385,7 +411,7 @@ def run_job(g, p, contract, jd, vendor, model, tier, prompt, approve_top=False, 
 
 # ---------- council ----------
 
-COUNCIL_PROMPT = """You are one of two independent advisors. Answer the question below on your own evidence and reasoning; you will not see the other advisor's answer.
+COUNCIL_PROMPT = """You are one of two advisors answering separately. Give a recommendation supported by evidence and reasoning. You will not see the other advisor's answer.
 
 QUESTION
 {q}
@@ -396,7 +422,7 @@ COUNCIL_SCHEMA = {"type": "object", "additionalProperties": False, "required": [
                   "properties": {"recommendation": {"type": "string"}, "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
                                  "reasoning": {"type": "string"}, "objections": {"type": "array", "items": {"type": "string"}}}}
 
-JUDGE_PROMPT = """Two advisors disagree. Decide. Do not restate both; resolve the disputed propositions and say what to do.
+JUDGE_PROMPT = """Evaluate two recommendations. Identify the material disagreement, compare the supporting evidence, and recommend a next step. Preserve uncertainty when the evidence is insufficient.
 
 QUESTION
 {q}
@@ -407,16 +433,16 @@ ADVISOR A ({a_vendor})
 ADVISOR B ({b_vendor})
 {b}
 
-Return markdown: a one-paragraph decision, then 'Why A/B is wrong on:' bullets, then 'Do this next:' bullets."""
+Return concise markdown under Decision, Evidence, and Next step. Explain which disputed claims affect the decision."""
 
 
-def council(g, p, domain, data_class, question, jd, approve_top=False, interactive=True, on_progress=None):
+def council(g, p, domain, data_class, question, jd, approve_top=False, interactive=True, on_progress=None, declass=None, source="council"):
     cfg = p["council"]
     allowed = eligible_vendors(g, domain, data_class)
     members = [v for v in cfg["members"] if v in allowed][:2]
     if len(members) < 2:
         raise RouteError("council needs two eligible vendors in %s at data_class=%s; eligible: %s" % (domain, data_class, "/".join(allowed)))
-    contract = build_contract(g, p, domain, "plan", question, data_class, members[0], p["ladders"][members[0]][str(cfg["tier"])], cfg["tier"], "council", review=False)
+    contract = build_contract(g, p, domain, "plan", question, data_class, members[0], p["ladders"][members[0]][str(cfg["tier"])], cfg["tier"], source, review=False, declass=declass)
     contract["id"] = contract["id"].replace("-plan", "-council")
     jd = create_job(g, contract)
     release_writer_lock(g, contract)  # a council reads and advises; it owns no domain write set
@@ -447,6 +473,8 @@ def council(g, p, domain, data_class, question, jd, approve_top=False, interacti
             event(jd, "judge-refused", reason=str(e))
             return jd, "disagree", outs, None
         contract["authorization"]["top_model_approval"] = approval
+        with open(os.path.join(jd, "contract.json"), "w") as f:
+            json.dump(contract, f, indent=2)
         env, _ = attempt(g, p, contract, jd, 3, jv, jm, cfg["judge_tier"],
                          JUDGE_PROMPT.format(q=question, a_vendor=outs[0]["vendor"], a=json.dumps(a, indent=1), b_vendor=outs[1]["vendor"], b=json.dumps(b, indent=1)), purpose="judge")
         judge_text = env.get("text") if env["execution_status"] == "succeeded" else None
@@ -461,14 +489,14 @@ def council(g, p, domain, data_class, question, jd, approve_top=False, interacti
 
 FRAMINGS = [
     "Analyze the problem objectively.",
-    "You are a conservative analyst who weighs downside risks heavily.",
-    "You are an aggressive strategist who optimizes for upside.",
-    "Challenge conventional wisdom: what does everyone get wrong here?",
-    "Reason from first principles; ignore what is conventional.",
+    "Evaluate downside risks and the conditions under which each option fails.",
+    "Evaluate the potential benefit and what must hold for it to be realized.",
+    "Identify assumptions that could change the recommendation.",
+    "Reason from the underlying mechanisms and constraints.",
     "Think from the end user's perspective: what matters most to them?",
-    "Assume limited time and budget: what is the highest-leverage move?",
-    "Optimize for the five-year outcome, not the ninety-day one.",
-    "Use only what is measurable and provable; ignore intuition.",
+    "Compare the options under limited time and budget.",
+    "Compare near-term and long-term consequences.",
+    "Prioritize measured evidence and identify what remains uncertain.",
     "Map second- and third-order effects of each choice.",
 ]
 
@@ -489,8 +517,8 @@ def _norm(s):
     return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
 
 
-def consensus(g, p, domain, data_class, question, n=5, options=None, on_progress=None):
-    """N cheap independent samples (tier 1), framings cycled, vendors rotated over the eligible set; mechanical aggregation."""
+def consensus(g, p, domain, data_class, question, n=5, options=None, on_progress=None, declass=None, source="consensus"):
+    """N tier-1 samples with separate calls, framings cycled, vendors rotated over the eligible set; mechanical aggregation."""
     from concurrent.futures import ThreadPoolExecutor
     n = max(3, min(int(n), 10))
     allowed = eligible_vendors(g, domain, data_class)
@@ -498,9 +526,9 @@ def consensus(g, p, domain, data_class, question, n=5, options=None, on_progress
     if not members:
         raise RouteError("no eligible vendor in %s at data_class=%s" % (domain, data_class))
     lead = members[0]
-    contract = build_contract(g, p, domain, "scout", question, data_class, lead, p["ladders"][lead]["1"], 1, "consensus", review=False)
+    contract = build_contract(g, p, domain, "scout", question, data_class, lead, p["ladders"][lead]["1"], 1, source, review=False, declass=declass)
     contract["id"] = contract["id"].replace("-scout", "-consensus")
-    contract["limits"]["calls"] = n
+    contract["limits"]["calls"] = 2 * n  # one retry per invalid sample
     jd = create_job(g, contract)
     release_writer_lock(g, contract)
     opts = ("OPTIONS (pick one): " + "; ".join(options)) if options else ""
@@ -572,10 +600,11 @@ def triage(g, p, domain, data_class, task):
     if not allowed:
         raise RouteError("no eligible vendor in %s at data_class=%s" % (domain, data_class))
     v = "claude" if "claude" in allowed else allowed[0]
-    m = p["ladders"][v]["1"]
+    v, m, _ = resolve(g, p, domain, "scout", data_class, vendor=v, tier=1)
+    gate_check(g, p, m, False, False)
     cwd = os.path.join(SYSTEM, "router", "jobs", "_triage")
     os.makedirs(cwd, exist_ok=True)
-    env = adapters.run(v, m, TRIAGE_PROMPT.format(task=task), cwd, p["timeouts_s"]["1"], max_turns=2, json_schema=TRIAGE_SCHEMA)
+    env = adapters.run(v, m, TRIAGE_PROMPT.format(task=task), cwd, p["timeouts_s"]["1"], max_turns=2, json_schema=TRIAGE_SCHEMA, no_tools=True, web_search=False)
     parsed = verify.parse_review(env.get("text") or "") if env["execution_status"] == "succeeded" else None
     if parsed is None or verify.validate(parsed, TRIAGE_SCHEMA) or parsed["role"] not in p["roles"]:
         raise RouteError("triage failed: %s" % (env.get("error") or "unusable classification"))

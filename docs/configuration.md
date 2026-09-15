@@ -1,150 +1,72 @@
 # Configuration
 
-Four files, one concern each. Every real file is gitignored; every shipped example is the documentation.
-
-| File | Concern | Shipped example |
+| File | Purpose | Git status |
 |---|---|---|
-| `shared/governance.json` | who you are, your domains, data classes, the gate, the rules | `shared/governance.example.json` |
-| `router/policy.json` | roles, model allowlist, ladders, timeouts, limits, reviewer pairing, council | committed (edit in place) |
-| `gate/markers.txt` | what must never reach a public repo | `gate/markers.example.txt` |
-| `registry/config.json` | what the registry probes beyond the defaults | `registry/config.example.json` |
+| `shared/governance.json` | Operator, hub path, domains, vendor eligibility, and generated rules | Ignored; copy supplied example or run `ai init` |
+| `router/policy.json` | Roles, models, tiers, limits, and review configuration | Tracked; preserve local edits during upgrades |
+| `gate/markers.txt` | Publication scan patterns | Ignored; copy `markers.example.txt` |
+| `registry/config.json` | Optional inventory probes | Ignored; copy `config.example.json` |
+| `registry/manual.json` | Dated observations that cannot be probed | Ignored; copy `manual.example.json` |
 
-## `shared/governance.json`
+## Governance
 
-```jsonc
-{
-  "version": 1,
-  "operator": "you",              // name written into approval and declassification records and instruction files
-  "hub": "/path/to/hub",          // null → parent directory of this checkout; `ai init` writes the resolved path
-  "vendors": ["claude", "codex", "grok", "gemini"],   // every vendor the hub may ever use
+Start from [governance.example.json](../shared/governance.example.json). `hub` defaults to the checkout's parent directory when null. Domain entries specify `kind`, `default_data_class`, and `title`; optional fields include `vendors`, `notes`, and `canary`.
 
-  "data_classes": {
-    "private":   {"vendors": ["claude", "codex"], "meaning": "…"},
-    "sanitized": {"vendors": ["claude", "codex", "grok", "gemini"], "meaning": "…"},
-    "public":    {"vendors": ["claude", "codex", "grok", "gemini"], "meaning": "…"}
-  },
+Eligible vendors are the intersection of the domain's vendor list and the selected data class's vendor list. A domain without its own list inherits the hub's `vendors`. The example permits Claude and Codex for private content; wider routing requires an explicit classification decision.
 
-  "top_model_gate": {
-    "models": ["claude-fable-5-1", "gpt-6-astra"],   // mirrors requires_approval in policy.json; used in generated text
-    "rule": "…"                                       // the sentence vendors read
-  },
-  "unavailable_models": [],       // listed in CROSS-DOMAIN.md so agents stop asking for them
+`rules` supplies the text rendered into `CROSS-DOMAIN.md`. The generator also writes root and domain `CLAUDE.md`/`AGENTS.md` files and Claude file-tool deny settings for sibling domains.
 
-  "domains": {
-    "work": {
-      "kind": "private",                 // private | public | staging | system
-      "default_data_class": "private",
-      "title": "Projects, drafts, working notes",
-      "notes": ["…"],                    // bullets in the domain's instruction file
-      "canary": ".canary-sandbox",       // optional file that must be unreadable from other domains
-      "vendors": ["claude", "codex"]     // optional: restrict this domain below the hub-wide list
-    },
-    "public":      {"kind": "public",  "default_data_class": "public",  "title": "…"},
-    "_publishing": {"kind": "staging", "default_data_class": "private", "title": "…"},
-    "_system":     {"kind": "system",  "default_data_class": "private", "vendors": ["claude", "codex"], "title": "…"}
-  },
-
-  "rules": {                       // rendered into CROSS-DOMAIN.md; known keys get their paragraph, any other key is appended
-    "header": "Orchestration: <role> <vendor>/<model>",
-    "isolation": "…", "publish": "…", "canary": "…", "router": "…"
-  }
-}
+```bash
+make generate
+make drift-check
 ```
 
-**Eligibility** for a job is `domains[d].vendors ∩ data_classes[c].vendors` (domain vendors default to the hub-wide list). A vendor absent from both a domain and a class is never even a candidate.
+Generated settings are not an OS isolation boundary. Review their behavior against the installed client; see [enforcement](architecture.md#enforcement-boundary).
 
-**`_system` is a domain** like any other, with the checkout as its directory; keep its vendors to those with local sandboxes.
+## Routing policy
 
-After any edit: `make generate`, then `make drift-check` should say `0 drifted`. Add a domain → also `mkdir -p <hub>/<domain>/.ai/jobs`.
+A role defines a default vendor and tier, a review flag, a turn limit, and `codex_sandbox`. Optional `hub_only` roles are refused outside `_system`.
 
-### What the generator writes
+- `models`: allowed IDs, vendor, tier, configured availability, and `requires_approval`.
+- `ladders`: a model ID for each vendor/tier combination. Multiple tiers may map to one model.
+- `timeouts_s`: per-tier defaults, copied into a job's per-call timeout when the contract is built.
+- `limits`: normal-job call budget, permitted repairs, escalation switch/count, and review character limit. Current execution performs at most one escalation.
+- `reviewer_for`: preferred reviewing vendor; fallback remains subject to eligibility, availability, approval, and remaining budget.
+- `council`: two configured member vendors and tiers, plus the judge vendor and tier.
 
-| Target | Content |
+The shipped limits are six adapter calls, one repair, one escalation, and 80,000 review characters. The timeout remains the contract's initial value during repair and escalation. Consensus records a separate ceiling of two calls per requested sample, allowing one malformed-response retry.
+
+The executable model gate is `models[].requires_approval`. Keep `governance.top_model_gate.models` consistent; that list drives generated instructions. Model IDs and availability flags are examples to verify against your accounts. `ai smoke` tests only tier-1 entries and does not update policy or registry files.
+
+## Marker files
+
+Use one POSIX extended regex per line. Matching is case-insensitive; blank lines and lines starting with `#` after whitespace are ignored. Patterns should cover identifiers relevant to the material you publish. The example includes common path and key patterns, not an exhaustive secret catalog.
+
+Resolution order:
+
+1. `--markers FILE`
+2. `PUBLISH_GATE_MARKERS`
+3. `<target>/.publish-gate-markers`
+4. `<checkout>/gate/markers.txt`
+
+A named file that is missing, empty, or invalid blocks the scan. Exact-line exceptions belong in `<target>/.publish-gate-allow` after review. Finding format is consistent across modes: `path:line:text` or the printed binary finding. Old exceptions beginning with `+` from textual-diff scans must be regenerated.
+
+## Registry
+
+`registry/config.json` can set `launchd_prefixes`, enable Composio connection probing, and add `extra_commands` with a name and an argument list or shell-like string. Strings are split into arguments; the probe does not execute a shell pipeline.
+
+The registry combines observations and configuration. CLI versions, SDK importability, configured MCP servers, and model catalog entries are different kinds of evidence. Model entries are copied from policy, and the router does not use registry results for routing. Keep generated registry output private because it can contain local paths and configuration details.
+
+## Environment
+
+| Variable | Effect |
 |---|---|
-| `<hub>/CROSS-DOMAIN.md` | Isolation, data classes, top models, publish, canaries, header, router, plus any extra rule keys |
-| `<hub>/CLAUDE.md`, `<hub>/AGENTS.md` | Hub-root instructions for Claude Code and Codex |
-| `<hub>/<domain>/CLAUDE.md`, `AGENTS.md` | Scope, data class → eligible vendors, notes, canary |
-| `<hub>/<domain>/.claude/settings.json` | `permissions.deny` for Read/Edit/Write on every sibling domain (absolute paths; this is what makes Claude Code's isolation technical) |
+| `AI_GOVERNANCE` | Override the governance file for the router and generator |
+| `AI_POLICY` | Override router policy |
+| `AI_NO_COCKPIT=1` | Suppress automatic status refresh |
+| `COCKPIT_NOTIFY=0` | Disable status-change notifications |
+| `PUBLISH_GATE_MARKERS` | Select a marker file |
+| `GEMINI_API_KEY` | Gemini credential; adapter also checks a login shell if unset |
+| `PREFIX` | Installer prefix; defaults to `~/.local` |
 
-Paths shown in instruction files are `~`-relative when the hub is under your home directory, so a public domain's `CLAUDE.md` never contains an absolute home path.
-
-## `router/policy.json`
-
-```jsonc
-{
-  "roles": {
-    "scout": {
-      "description": "Quick lookup or triage",
-      "default_vendor": "claude",
-      "default_tier": 1,
-      "max_turns": 5,                 // agentic turn budget passed to the vendor CLI
-      "codex_sandbox": "read-only",   // read-only | workspace-write; also decides the contract's write set and effects
-      "review": false,                // cross-vendor review by default
-      "hub_only": false               // optional: refuse outside _system
-    },
-    "code":  {"default_vendor": "codex", "default_tier": 2, "max_turns": 30, "codex_sandbox": "workspace-write", "review": true},
-    "write": {"default_vendor": "claude", "default_tier": 2, "max_turns": 15, "codex_sandbox": "workspace-write", "review": true},
-    "live":  {"default_vendor": "grok", "default_tier": 2, "max_turns": 40, "codex_sandbox": "read-only", "review": false}
-  },
-
-  "models": [                        // THE ALLOWLIST: the router launches nothing else
-    {"id": "claude-haiku-4-5-20251001", "vendor": "claude", "tier": 1, "requires_approval": false, "available": true, "billing": "subscription"},
-    {"id": "claude-fable-5-1",          "vendor": "claude", "tier": 3, "requires_approval": true,  "available": true, "billing": "subscription"},
-    {"id": "gemini-3.5-pro",            "vendor": "gemini", "tier": 3, "requires_approval": false, "available": false, "note": "…"}
-  ],
-
-  "ladders": {                       // tier → model id, per vendor; every tier must resolve to an available model
-    "claude": {"1": "claude-haiku-4-5-20251001", "2": "claude-sonnet-5", "3": "claude-fable-5-1"},
-    "gemini": {"1": "gemini-3.5-flash-lite", "2": "gemini-3.5-flash", "3": "gemini-3.5-flash"}
-  },
-
-  "timeouts_s": {"1": 240, "2": 900, "3": 1200},   // per tier, per attempt
-  "limits": {"repairs": 1, "escalations": 1, "review_max_chars": 80000, "calls": 6},
-  "reviewer_for": {"claude": "codex", "codex": "claude", "grok": "claude", "gemini": "claude"},
-  "council": {"members": ["claude", "codex"], "tier": 2, "judge_vendor": "claude", "judge_tier": 3}
-}
-```
-
-- **Model ids change.** When a vendor renames or retires a model, edit the entry and the ladder, then `ai smoke`. Mark an id `"available": false` rather than deleting it if you want the router to explain the refusal.
-- **`requires_approval`** is the gate. Keep `governance.top_model_gate.models` in step so the generated rules say the same thing.
-- **`reviewer_for`** names the preferred reviewer; if that vendor is not eligible for the job's data class, the next eligible vendor other than the writer is used.
-- **Adding a role** needs only an entry here (and a line in `ROLE_PROMPT` in `router/ai` if it wants a system prompt).
-
-## `gate/markers.txt`
-
-One POSIX extended regex per line; blank lines and `#` comments ignored; matched case-insensitively.
-
-```
-# home-directory paths — never in a public repo
-/Users/[a-z0-9_.-]+/
-/home/[a-z0-9_.-]+/
-# private folder or project names
-acme-private
-# your personal email (put the real one here)
-someone@example\.com
-# secrets
-BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY
-AKIA[0-9A-Z]{16}
-```
-
-Resolution order: `--markers FILE` → `$PUBLISH_GATE_MARKERS` → `<target repo>/.publish-gate-markers` → `gate/markers.txt`. A path given by flag or variable that does not exist **blocks** (misconfiguration must not silently switch marker sets). No markers at all blocks.
-
-Exceptions: `<target repo>/.publish-gate-allow`, one exact finding line per entry (as printed by the gate, e.g. `README.md:12:contact someone@example.com`). Review these by hand; they are the only way past the gate.
-
-## `registry/config.json`
-
-```jsonc
-{
-  "launchd_prefixes": ["com.example."],   // macOS LaunchAgents to report (label prefixes); [] → section says "no prefixes configured"
-  "probe_composio": false,                // run `composio connections list` if the CLI is on PATH
-  "extra_commands": [                     // any command whose exit code you want recorded
-    {"name": "docker", "cmd": ["docker", "--version"]}
-  ]
-}
-```
-
-`registry/manual.json` holds facts no probe can discover (a cloud connector, an account tier), each with `value` and `last_verified`.
-
-## Environment variables
-
-See [usage.md](usage.md#environment-variables).
+Ops and registry scripts read configuration relative to the checkout. `AI_GOVERNANCE` and `AI_POLICY` are not global overrides for every component.

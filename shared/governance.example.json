@@ -3,23 +3,44 @@
   "operator": "you",
   "hub": null,
   "generated_note": "Canonical source. `make generate` regenerates CROSS-DOMAIN.md, root and domain CLAUDE.md/AGENTS.md, and every .claude/settings.json. Hand-edits to generated files are overwritten; `make drift-check` reports them. `hub` null = the parent directory of this _system checkout.",
-  "vendors": ["claude", "codex", "grok", "gemini"],
+  "vendors": [
+    "claude",
+    "codex",
+    "grok",
+    "gemini"
+  ],
   "data_classes": {
     "private": {
-      "vendors": ["claude", "codex"],
-      "meaning": "Domain content as-is. Default for every private domain. Only vendors whose CLIs run locally under sandbox rules see it."
+      "vendors": [
+        "claude",
+        "codex"
+      ],
+      "meaning": "Unpublished domain content. The example permits Claude and Codex; inspect their filesystem controls before use."
     },
     "sanitized": {
-      "vendors": ["claude", "codex", "grok", "gemini"],
+      "vendors": [
+        "claude",
+        "codex",
+        "grok",
+        "gemini"
+      ],
       "meaning": "A payload the operator has explicitly declassified for one task (`ai --data-class sanitized`). The declassification is recorded in the job contract."
     },
     "public": {
-      "vendors": ["claude", "codex", "grok", "gemini"],
+      "vendors": [
+        "claude",
+        "codex",
+        "grok",
+        "gemini"
+      ],
       "meaning": "Public or intended-public material. Default for public domains."
     }
   },
   "top_model_gate": {
-    "models": ["claude-fable-5-1", "gpt-6-astra"],
+    "models": [
+      "claude-fable-5-1",
+      "gpt-6-astra"
+    ],
     "rule": "The operator approves each use: `ai --approve-top-model` or an interactive y/N; non-interactive runs without the flag are refused."
   },
   "unavailable_models": [],
@@ -28,41 +49,54 @@
       "kind": "private",
       "default_data_class": "private",
       "title": "Projects, drafts, working notes",
-      "notes": ["Anything here is private until it is deliberately published through _publishing/ and the gate."],
+      "notes": [
+        "Anything here is private until it is deliberately published through _publishing/ and the gate."
+      ],
       "canary": ".canary-sandbox"
     },
     "personal": {
       "kind": "private",
       "default_data_class": "private",
       "title": "Personal records",
-      "notes": ["Highly sensitive. Nothing from this domain may appear in any public output."],
+      "notes": [
+        "Highly sensitive. Nothing from this domain may appear in any public output."
+      ],
       "canary": ".canary-sandbox"
     },
     "public": {
       "kind": "public",
       "default_data_class": "public",
       "title": "Public repositories",
-      "notes": ["Everything here is public or intended to be public. Never introduce private material; pre-commit and pre-push hooks run the publish gate."]
+      "notes": [
+        "Everything here is public or intended to be public. Never introduce private material; pre-commit and pre-push hooks run the publish gate."
+      ]
     },
     "_publishing": {
       "kind": "staging",
       "default_data_class": "private",
       "title": "Private staging for public output",
-      "notes": ["Content here is still private. Only the domain that owns the content writes here; the gate checks everything before it moves to a public domain."]
+      "notes": [
+        "Content here is still private. Only the domain that owns the content writes here; the gate checks everything before it moves to a public domain."
+      ]
     },
     "_system": {
       "kind": "system",
       "default_data_class": "private",
-      "vendors": ["claude", "codex"],
+      "vendors": [
+        "claude",
+        "codex"
+      ],
       "title": "Control plane: router, shared governance, registry, ops, archive",
-      "notes": ["Hub administration only when the operator explicitly authorizes it. Preserve schedules, backups, and the publish gate. One writer per file set. Archive, never delete."]
+      "notes": [
+        "Hub administration only when the operator explicitly authorizes it. Preserve schedules, backups, and the publish gate. One writer per file set. Archive, never delete."
+      ]
     }
   },
   "rules": {
     "header": "Orchestration: <role> <vendor>/<model>",
-    "isolation": "One session works in one domain and reads or writes only inside it. Claude enforces this with deny rules in .claude/settings.json; every other vendor follows it as a rule. Cross-domain work happens only from the hub root on the operator's explicit request.",
-    "publish": "Any write that crosses from a private domain into a public domain is a publish. Domain sessions never publish (their deny rules block _publishing and public domains by design); publication runs from the hub root on the operator's request, via `_system/gate/publish-gate.sh` first. If it blocks, stop and report. Public repos carry no personal info, no home-directory paths, no private folder names, no private email addresses.",
+    "isolation": "Work in one domain per session. Cross-domain work requires the operator's explicit instruction from the hub root. Claude file-tool deny rules are generated in .claude/settings.json; shell access and other tools require separate controls. Instructions alone do not isolate a process.",
+    "publish": "Move private material into a public domain only from an authorized hub session. Scan the prepared files with `_system/gate/publish-gate.sh`, then scan the destination and staged changes. If a scan blocks, resolve the finding or error before publishing. Keep personal data, home paths, and private identifiers out of public files.",
     "canary": "Every private domain's `.canary-sandbox` must be unreadable from a public-domain session; if you can read one, stop and report.",
-    "router": "From inside a domain: `ai <role> \"task\"`. Roles, ladders and limits: _system/router/policy.json. Job records: <domain>/.ai/jobs/<id>/. Grok and Gemini always run in an empty sandbox (the prompt is their whole payload); Grok has web search only in the `live` role."
+    "router": "Run `ai <role> \"task\"` inside a domain. Roles and model settings: _system/router/policy.json. Records: <domain>/.ai/jobs/<id>/. Grok and Gemini start in an empty working directory; this is not an OS sandbox. Grok web search is enabled for the live role."
   }
 }

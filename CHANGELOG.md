@@ -1,14 +1,20 @@
 # Changelog
 
-## 0.1.0 — first public release
+## Unreleased
 
-Extracted from a private multi-vendor hub and made generic.
+- Rewrote documentation around routing, response evaluation, job records, and adapter limits. Removed unmeasured quality and cost claims.
+- Made `auto --dry-run` skip classification, and made explicit model selection respect `--max-tier`.
+- Applied catalog and approval checks before recorded adapter dispatch, including reviewers and council members; preserved council judge approval and declassification records.
+- Used read-only reviewer settings, forwarded review schemas, and recorded the reviewer that returned the verdict after fallback.
+- Counted review and fallback calls in the standard-job budget. Wrote the current response before command checks; rejected duplicate review checks and invalid builtin rules.
+- Replaced reclaimable lock files with advisory OS locks held for the job lifetime. Read-only jobs no longer contend on a shared `result.md` lock.
+- Corrected generated Claude permission paths to recursive absolute-path syntax.
+- Scanned staged and historical Git blobs directly, including binaries above the previous size cutoff. Exact-line finding format is now consistent across modes; regenerate old `+diff-line` exceptions.
+- Required explicit approval before preparing a gated vendor handoff; preserved ShellCheck failure status and reported unknown Codex cost as null.
 
-- Router: `ai <role>` with contracts, deterministic checks, fresh-context cross-vendor review, bounded repair, gated escalation, one writer per write set, per-job audit trail.
-- `ai auto` (triage), `ai council` (two advisors + gated judge), `ai consensus` (stochastic ensemble), `ai accept`, `ai smoke`, `ai jobs`, `ai roles`, `ai init`.
-- Governance generator: one JSON file → cross-domain rules, per-vendor instruction files, Claude Code deny rules; drift check.
-- Publish gate: fail-closed private-marker scanner (tree / staged / push-range), markers file, allowlist, hook installer, 22 fixtures.
-- Registry: probe-based capability inventory (JSON first, Markdown view).
-- Ops: cockpit (STATUS.md with derived attention), session handoff, vendor handoff, registry audit.
-- Coordination protocol, `/wrap` skill, Claude Code agent definitions.
-- 47 offline router tests; CI on Linux and macOS, Python 3.9+.
+## 0.1.0 — initial package
+
+- CLI for routed tasks, auto-classification, council, consensus, and job inspection.
+- Contracts, response checks, cross-vendor review, bounded repair, and escalation.
+- Governance generator, marker scanner, registry, status page, and manual handoffs.
+- Offline tests and a CI workflow configured for Linux and macOS.

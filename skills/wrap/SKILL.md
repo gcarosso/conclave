@@ -3,7 +3,7 @@ name: wrap
 description: "End a session safely: write the handoff, run pre-archive checks, and archive only when told. Use when the operator types /wrap, /wrap archive, 'wrap', 'wrap it up', or 'handoff and archive'."
 ---
 
-# /wrap — handoff + safe archival
+# Session handoff and archive
 
 `/wrap` writes the handoff and runs the checks, then asks. `/wrap archive` also archives this session if every check passes; typing it counts as the operator's explicit consent.
 
@@ -24,12 +24,12 @@ Sections: **Goal & authorization** · **What changed** (paths) · **Evidence** (
 - Domain → prepend a dated entry to `<domain>/HANDOFF.md`; older entries stay below.
 
 ## 4. Memory
-Save only durable, non-obvious preferences or feedback learned this session. Never private document contents or sensitive personal details.
+Update persistent memory only when the operator explicitly requests it. Keep private document contents and sensitive personal details out of memory; record task evidence in the workspace handoff.
 
 ## 5. Pre-archive checks
 | Check | Pass when |
 |---|---|
-| Uncommitted work | Every touched repo is clean, or its changes are listed in the handoff as intentional. Never commit without being asked. |
+| Uncommitted work | Every touched repo is clean, or its changes are listed in the handoff as intentional. Commit only within the operator's authorization. |
 | Running work | No background task, workflow, or locked `ai` job belongs to this session. |
 | Governance | If `governance.json` or generated files were touched: `make -C _system/router drift-check` is clean. |
 | Tests | If router code was touched: `make -C _system/router test` is OK. |
@@ -37,7 +37,7 @@ Save only durable, non-obvious preferences or feedback learned this session. Nev
 | Handoff | The file exists and names a next action. |
 
 ## 6. Report and archive
-Reply with the handoff path and the checks table (✓ / ⚠ with reason).
+Report the handoff path, completed checks, and any unresolved item.
 - `/wrap` → end with: "Ready to archive — `/wrap archive` or say archive."
 - `/wrap archive` → if every check is ✓, archive this session; if any is ⚠, don't archive — list what needs the operator.
 Archiving is reversible; the transcript stays on disk.

@@ -6,7 +6,7 @@
 # file into the repository being scanned.
 #
 # Format: one POSIX extended regular expression per line (grep -E syntax), matched
-# case-insensitively against every line of every file, diff line, or binary string. Blank lines
+# case-insensitively against raw file bytes and Git blobs. Blank lines
 # and lines starting with # are ignored. Leading and trailing whitespace is trimmed. Any line
 # that matches a pattern blocks the publish unless that exact finding is listed in the target's
 # .publish-gate-allow file.

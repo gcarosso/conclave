@@ -9,7 +9,7 @@ Generated, for every domain including _publishing and _system:
   <hub>/CROSS-DOMAIN.md                 the rules every vendor reads
   <hub>/CLAUDE.md, <hub>/AGENTS.md      hub-root instructions (Claude Code reads CLAUDE.md, Codex reads AGENTS.md)
   <hub>/<domain>/CLAUDE.md, AGENTS.md   per-domain scope, data class, notes
-  <hub>/<domain>/.claude/settings.json  Claude Code deny rules for every sibling domain (technical isolation)
+  <hub>/<domain>/.claude/settings.json  Claude file-tool deny rules for sibling domains
 
 Nothing here is hand-edited: change governance.json, regenerate, and `--check` in CI or the cockpit catches drift.
 """
@@ -100,7 +100,7 @@ def domain_file(g, name, vendor):
 
 Read `../CROSS-DOMAIN.md`. Start every response with `{hdr}`.
 
-**Scope.** You are working inside `{display_hub(g)}/{name}/`. Do not read or write outside it{' (Claude: enforced by .claude/settings.json)' if vendor == 'claude' else ''}.
+**Scope.** Work inside `{display_hub(g)}/{name}/`. Do not read or write outside it.{' Claude file-tool deny rules are in .claude/settings.json; shell and other tools require separate controls.' if vendor == 'claude' else ''}
 
 **Data class.** `{d['default_data_class']}` → eligible vendors: {', '.join(v for v in vendors if v in g['data_classes'][d['default_data_class']]['vendors'])}.
 {('**Notes.**' + chr(10) + notes) if notes else ''}{canary}
@@ -113,7 +113,7 @@ def settings(g, name):
     deny = []
     for o in others:
         for op in ("Read", "Edit", "Write"):
-            deny.append(f"{op}(file_path:{hub}/{o}/*)")
+            deny.append(f"{op}(/{os.path.abspath(os.path.join(hub, o))}/**)")
     return json.dumps({"permissions": {"deny": deny}}, indent=2) + "\n"
 
 

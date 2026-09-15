@@ -6,9 +6,9 @@ Every adapter returns the same envelope:
   elapsed_s, error, raw_stdout, raw_stderr
 
 Adding a vendor: write one function with this signature and envelope, add it to `run`, add its
-models and ladder to policy.json, and add its name to `vendors` in governance.json. If the vendor
-only ever receives the prompt (no local CLI that reads files), add it to PROMPT_ONLY_VENDORS so the
-kernel runs it from an empty sandbox directory instead of a domain.
+models and ladder to policy.json, and add its name to `vendors` in governance.json.
+PROMPT_ONLY_VENDORS selects an empty working directory for adapters that do not need project files.
+This reduces incidental context; it does not restrict a local process's host access.
 """
 import json
 import os
@@ -69,12 +69,14 @@ def _last_json(out):
         return {}
 
 
-def claude(model, prompt, cwd, timeout, settings=None, max_turns=10, json_schema=None):
+def claude(model, prompt, cwd, timeout, settings=None, max_turns=10, json_schema=None, no_tools=False):
     cmd = ["claude", "-p", "--model", model, "--output-format", "json", "--max-turns", str(max_turns)]
     if settings and os.path.exists(settings):
         cmd += ["--settings", settings]
     if json_schema:
         cmd += ["--json-schema", json.dumps(json_schema)]
+    if no_tools:
+        cmd += ["--tools", "", "--strict-mcp-config", "--disable-slash-commands"]
     cmd.append(prompt)
     rc, out, err, el, e = _run(cmd, cwd, timeout)
     env = envelope(exit_code=rc, elapsed_s=el, error=e, billing="subscription", raw_stdout=out, raw_stderr=err)
@@ -135,7 +137,7 @@ def codex(model, prompt, cwd, timeout, sandbox="read-only", network=False, outpu
             sid = o.get("thread_id") or o.get("id")
     env = envelope(exit_code=rc, elapsed_s=el, error=e, billing="subscription", raw_stdout=out, raw_stderr=err,
                    text=text, session_id=sid, input_tokens=usage.get("input_tokens"),
-                   output_tokens=usage.get("output_tokens"), cost_usd=0.0 if rc == 0 else None)
+                   output_tokens=usage.get("output_tokens"), cost_usd=None)
     if e:
         env["execution_status"] = "timeout" if e == "timeout" else "failed"
         return env
@@ -216,10 +218,10 @@ def gemini(model, prompt, cwd, timeout):
 
 
 def run(vendor, model, prompt, cwd, timeout, sandbox="read-only", network=False, settings=None,
-        max_turns=10, json_schema=None, web_search=True):
+        max_turns=10, json_schema=None, web_search=True, no_tools=False):
     """Uniform entry point. json_schema (a JSON Schema dict) requests structured output where the vendor supports it."""
     if vendor == "claude":
-        return claude(model, prompt, cwd, timeout, settings=settings, max_turns=max_turns, json_schema=json_schema)
+        return claude(model, prompt, cwd, timeout, settings=settings, max_turns=max_turns, json_schema=json_schema, no_tools=no_tools)
     if vendor == "codex":
         return codex(model, prompt, cwd, timeout, sandbox=sandbox, network=network, output_schema=json_schema)
     if vendor == "grok":

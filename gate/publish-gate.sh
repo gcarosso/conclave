@@ -3,15 +3,15 @@
 #
 # USAGE
 #   publish-gate.sh [--markers FILE] <path>                 tree mode
-#   publish-gate.sh [--markers FILE] --staged <repo>        staged additions (pre-commit hook)
+#   publish-gate.sh [--markers FILE] --staged <repo>        staged file versions (pre-commit hook)
 #   publish-gate.sh [--markers FILE] --diff <repo> [A..B]   commits about to be pushed (pre-push hook)
 #
 #   tree     scans every file: in a git repo, tracked + untracked-not-ignored (dotfiles included);
 #            outside git, everything `find` reaches except .git/ directories.
-#   staged   scans every added line in the index, plus every binary added or modified in the index.
-#   diff     scans every added line of every commit in the range (each commit becomes public
-#            history, so the net diff is not enough), plus binaries touched by those commits.
-#            Default range: @{push}..HEAD, then @{upstream}..HEAD; BLOCKS if neither exists.
+#   staged   scans the complete index blob of each added or modified file.
+#   diff     scans changed file blobs in every commit in the range, including merge commits.
+#            Reads Git objects, independent of the working tree. Default range: @{push}..HEAD,
+#            then @{upstream}..HEAD; blocks if neither exists.
 #
 # MARKERS FILE
 #   Patterns are never hardcoded here. They come from a markers file: one POSIX extended regular
@@ -28,14 +28,14 @@
 #
 # ALLOWLIST
 #   <target>/.publish-gate-allow: one exact finding line per allowed hit, verbatim as this gate
-#   prints it (tree mode "path:line:text", staged/diff modes the diff line including its leading
-#   "+", binaries "path:binary: ..."). Blank lines and # comments are ignored. The allowlist and
-#   the .publish-gate-markers file inside the target are never findings themselves; commit them
-#   only if their contents are acceptable in public.
+#   prints it: "path:line:text" or "path:binary: private marker inside binary (match)".
+#   Blank lines and # comments are ignored. The allowlist and .publish-gate-markers files
+#   are excluded from findings. Review their contents separately before committing them.
+#   Existing diff-line exceptions beginning with "+" must be regenerated for blob scanning.
 #
 # BINARIES
-#   grep skips binary files; every binary up to 5 MB is also searched with `strings`, or with
-#   `grep -a -o -E` when `strings` is not installed.
+#   All file sizes are scanned as raw bytes using grep -a. Compressed, encoded, or encrypted
+#   contents are not decoded. A clean scan means no configured pattern matched in this scope.
 #
 # EXIT CODES
 #   0  clean
@@ -43,7 +43,7 @@
 #      range could not be resolved, or the path does not exist. Every error blocks; the gate
 #      never fails open.
 #
-# Requires bash 3.2+, git, grep, sed, find, xargs, stat, mktemp. Runs on Linux and macOS.
+# Requires bash 3.2+, git, grep, sed, find, mktemp. Runs on Linux and macOS.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
@@ -111,7 +111,7 @@ if [[ ${#MARKERS[@]} -eq 0 ]]; then
 fi
 COMBINED=$(IFS='|'; printf '%s' "${MARKERS[*]}")
 grep -iE -e "$COMBINED" /dev/null 2>"$TMP/re_err"; re_rc=$?   # 1 = valid regex, no match; 2 = invalid regex
-if [[ $re_rc -eq 2 ]]; then
+if [[ $re_rc -gt 1 ]]; then
   echo "PUBLISH GATE: BLOCKED — invalid pattern in $MARKERS_FILE:"
   sed 's/^/  /' "$TMP/re_err"
   exit 1
@@ -121,81 +121,80 @@ fi
 ALLOW="$TARGET/.publish-gate-allow"
 ALLOWED="$TMP/allow"; : > "$ALLOWED"
 if [[ -f "$ALLOW" ]]; then
-  grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$ALLOW" > "$ALLOWED" 2>>"$ERR"
+  grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$ALLOW" > "$ALLOWED" 2>>"$ERR"; allow_rc=$?
+  [[ $allow_rc -le 1 ]] || echo "cannot read allowlist ($allow_rc)" >> "$ERR"
 fi
 
-# ---- portability helpers -----------------------------------------------------------------------
-file_size() {  # bytes; prints 0 when unknown, so an unknown size is still scanned (fail closed)
-  local s
-  s=$(stat -f %z "$1" 2>/dev/null) && [[ "$s" =~ ^[0-9]+$ ]] && { echo "$s"; return 0; }
-  s=$(stat -c %s "$1" 2>/dev/null) && [[ "$s" =~ ^[0-9]+$ ]] && { echo "$s"; return 0; }
-  echo 0
-}
-if command -v strings >/dev/null 2>&1; then
-  extract_strings() { strings "$1"; }
-else
-  extract_strings() { LC_ALL=C grep -a -i -o -E -e "$COMBINED" "$1"; }
-fi
-
-# ---- filters -----------------------------------------------------------------------------------
-# The allowlist and markers files inside the target are never findings. Everything else that
-# reaches here already matched a marker.
-policy_filter() { sed -E 's|^\./||' | grep -vE '^\.publish-gate-(allow|markers):' || true; }
-allow_filter() { policy_filter | { if [[ -s "$ALLOWED" ]]; then grep -vFxf "$ALLOWED" || true; else cat; fi; }; }
-
-# ---- scanners ----------------------------------------------------------------------------------
-# grep exits 0 match, 1 no match, 2 error. xargs folds both 1 and 2 into its own status on BSD, so
-# errors are detected through stderr (captured into $ERR); any stderr output blocks.
-scan_files_z() {  # reads NUL-separated paths on stdin, relative to $TARGET; prints path:line:text
-  ( cd "$TARGET" && xargs -0 -r grep -IiEnH -e "$COMBINED" -- ) 2>>"$ERR"
-  local rc=$?
-  case $rc in
-    0|1|123) ;;
-    *) echo "grep via xargs exited $rc" >> "$ERR" ;;
-  esac
-  return 0
-}
-scan_binaries_z() {  # reads NUL-separated paths on stdin; strings-scans binaries up to 5 MB
-  local f hit
-  while IFS= read -r -d '' f; do
-    [[ -f "$TARGET/$f" ]] || continue
-    grep -Iq . "$TARGET/$f" 2>/dev/null && continue        # text file: grep already covered it
-    [[ $(file_size "$TARGET/$f") -le 5242880 ]] || continue
-    hit=$(extract_strings "$TARGET/$f" 2>>"$ERR" | grep -ioE -e "$COMBINED" | head -n 1)
-    [[ -n "$hit" ]] && echo "${f#./}:binary: private marker inside binary ($hit)"
-  done
+# ---- scanners -------------------------------------------------------------------------------
+# Scan raw bytes with grep -a, including binary files of any size. This does not decode
+# archives, images, encrypted data, or other encodings. A matching configured regex blocks.
+scan_file() {  # scan_file <file> <display path>
+  local source="$1" label="$2" rc binary=0 line
+  case "$label" in .publish-gate-allow|.publish-gate-markers) return 0 ;; esac
+  LC_ALL=C grep -Iq . "$source" 2>>"$ERR"; rc=$?
+  if [[ $rc -gt 1 ]]; then echo "file classification failed: $label ($rc)" >> "$ERR"; return; fi
+  [[ $rc -eq 1 ]] && binary=1
+  if [[ $binary -eq 1 ]]; then
+    LC_ALL=C grep -aioE -e "$COMBINED" "$source" > "$TMP/hits" 2>>"$ERR"; rc=$?
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      printf '%s:binary: private marker inside binary (%s)\n' "$label" "$line" >> "$TMP/raw"
+    done < "$TMP/hits"
+  else
+    LC_ALL=C grep -anE -i -e "$COMBINED" "$source" > "$TMP/hits" 2>>"$ERR"; rc=$?
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      printf '%s:%s\n' "$label" "$line" >> "$TMP/raw"
+    done < "$TMP/hits"
+  fi
+  [[ $rc -le 1 ]] || echo "grep failed: $label ($rc)" >> "$ERR"
   return 0
 }
 
-# ---- modes -------------------------------------------------------------------------------------
+scan_blob() {  # scan_blob <git revision:path> <display path>
+  if git -C "$TARGET" cat-file blob "$1" > "$TMP/blob" 2>>"$ERR"; then
+    scan_file "$TMP/blob" "$2"
+  else
+    echo "cannot read blob $1" >> "$ERR"
+  fi
+}
+
+: > "$TMP/raw"
 case "$MODE" in
   tree)
     if git -C "$TARGET" rev-parse --git-dir >/dev/null 2>&1; then
-      git -C "$TARGET" ls-files -z --cached --others --exclude-standard 2>>"$ERR" > "$TMP/list" || echo "git ls-files failed" >> "$ERR"
+      git -C "$TARGET" ls-files -z --cached --others --exclude-standard > "$TMP/list" 2>>"$ERR" || echo "git ls-files failed" >> "$ERR"
     else
-      ( cd "$TARGET" && find . -type f ! -path '*/.git/*' -print0 ) > "$TMP/list" 2>>"$ERR"
+      ( cd "$TARGET" && find . -type f ! -path '*/.git/*' -print0 ) > "$TMP/list" 2>>"$ERR" || echo "find failed" >> "$ERR"
     fi
-    scan_files_z    < "$TMP/list" | allow_filter >> "$FOUND"
-    scan_binaries_z < "$TMP/list" | allow_filter >> "$FOUND"
+    while IFS= read -r -d '' f; do scan_file "$TARGET/$f" "${f#./}"; done < "$TMP/list"
     ;;
   staged)
-    git -C "$TARGET" diff --cached --unified=0 --no-color 2>>"$ERR" > "$TMP/diff" || echo "git diff --cached failed" >> "$ERR"
-    grep -E '^\+' "$TMP/diff" | grep -vE '^\+\+\+' | grep -iE -e "$COMBINED" 2>>"$ERR" | allow_filter >> "$FOUND"
-    # binaries added to or modified in the index
-    git -C "$TARGET" diff --cached --name-only -z --diff-filter=AM 2>>"$ERR" | scan_binaries_z | allow_filter >> "$FOUND"
+    git -C "$TARGET" ls-files --unmerged > "$TMP/unmerged" 2>>"$ERR" || echo "git ls-files failed" >> "$ERR"
+    [[ ! -s "$TMP/unmerged" ]] || echo "index has unmerged entries" >> "$ERR"
+    git -C "$TARGET" diff --cached --name-only -z --diff-filter=ACMRT --no-renames > "$TMP/list" 2>>"$ERR" || echo "git diff --cached failed" >> "$ERR"
+    while IFS= read -r -d '' f; do scan_blob ":$f" "$f"; done < "$TMP/list"
     ;;
   diff)
     if [[ -z "$RANGE" ]]; then
       if git -C "$TARGET" rev-parse --verify -q '@{push}' >/dev/null 2>&1; then RANGE='@{push}..HEAD'
       elif git -C "$TARGET" rev-parse --verify -q '@{upstream}' >/dev/null 2>&1; then RANGE='@{upstream}..HEAD'
-      else echo "PUBLISH GATE: BLOCKED — no @{push} or @{upstream} for $(basename "$TARGET"); pass an explicit range"; exit 1; fi
+      else echo "PUBLISH GATE: BLOCKED — no upstream; pass an explicit revision range"; exit 1; fi
     fi
-    # every commit in the range becomes public history, so scan each commit's additions, not the net diff
-    git -C "$TARGET" log -p --unified=0 --no-color --format='commit %h' "$RANGE" -- 2>>"$ERR" > "$TMP/diff" || echo "git log -p $RANGE failed" >> "$ERR"
-    grep -E '^\+' "$TMP/diff" | grep -vE '^\+\+\+' | grep -iE -e "$COMBINED" 2>>"$ERR" | allow_filter >> "$FOUND"
-    git -C "$TARGET" log --name-only -z --diff-filter=AM --format= "$RANGE" -- 2>>"$ERR" | tr -s '\0' | scan_binaries_z | allow_filter >> "$FOUND"
+    git -C "$TARGET" rev-list "$RANGE" -- > "$TMP/commits" 2>>"$ERR" || echo "git rev-list failed" >> "$ERR"
+    while IFS= read -r commit; do
+      # -m includes changes relative to each merge parent; --root includes initial commits.
+      git -C "$TARGET" diff-tree --root -m --no-commit-id --name-only --diff-filter=ACMRT --no-renames -r -z "$commit" > "$TMP/list" 2>>"$ERR" || echo "git diff-tree failed" >> "$ERR"
+      while IFS= read -r -d '' f; do scan_blob "$commit:$f" "$f"; done < "$TMP/list"
+    done < "$TMP/commits"
     ;;
 esac
+
+# Exact-line exceptions apply consistently to tree, staged blobs, and historical blobs.
+if [[ -s "$ALLOWED" ]]; then
+  grep -vFxf "$ALLOWED" "$TMP/raw" > "$FOUND" 2>>"$ERR"; filter_rc=$?
+  [[ $filter_rc -le 1 ]] || echo "allowlist filter failed ($filter_rc)" >> "$ERR"
+else
+  cat "$TMP/raw" > "$FOUND" || echo "cannot read findings" >> "$ERR"
+fi
 
 # ---- verdict -----------------------------------------------------------------------------------
 if [[ -s "$ERR" ]]; then

@@ -105,5 +105,64 @@ expect clean   "target .publish-gate-markers found, not self-flagged" -- env -u 
 echo "token ZEBRA_TOKEN here" > "$T/self/leak.txt"
 expect blocked "target .publish-gate-markers pattern blocks" -- env -u PUBLISH_GATE_MARKERS "$BARE_GATE" "$T/self"
 
+# Regression: scan the index and history, even after the working copy changes.
+printf 'BLOB\x00SECRET_MARKER\x00' > "$T/repo/staged.bin"
+git -C "$T/repo" add staged.bin
+printf 'BLOB\x00clean\x00' > "$T/repo/staged.bin"
+expect blocked "staged binary differs from working tree" -- "$GATE" --staged "$T/repo"
+rm "$T/repo/staged.bin"
+expect blocked "staged binary absent from working tree" -- "$GATE" --staged "$T/repo"
+history_base=$(git -C "$T/repo" rev-parse HEAD)
+git -C "$T/repo" commit -qm binary
+git -C "$T/repo" add -u
+git -C "$T/repo" commit -qm remove-binary
+expect blocked "deleted binary marker in pushed history" -- "$GATE" --diff "$T/repo" "$history_base..HEAD"
+
+# A marker beyond the previous 5 MB cutoff still blocks.
+dd if=/dev/zero of="$T/plain/large.bin" bs=1048576 count=6 2>/dev/null
+printf 'SECRET_MARKER' >> "$T/plain/large.bin"
+expect blocked "binary larger than 5 MB" -- "$GATE" "$T/plain"
+rm "$T/plain/large.bin"
+
+# Filenames and exact-line allowlists apply to all modes.
+echo SECRET_MARKER > "$T/repo/file with spaces.txt"
+git -C "$T/repo" add 'file with spaces.txt'
+expect blocked "staged filename with spaces" -- "$GATE" --staged "$T/repo"
+echo 'file with spaces.txt:1:SECRET_MARKER' > "$T/repo/.publish-gate-allow"
+expect clean "staged exact-line exception" -- "$GATE" --staged "$T/repo"
+
+echo '[' > "$T/invalid-markers.txt"
+expect_msg "invalid pattern" "invalid regex blocks" -- "$GATE" --markers "$T/invalid-markers.txt" "$T/plain"
+expect blocked "invalid revision range blocks" -- "$GATE" --diff "$T/repo" DOES_NOT_EXIST
+
+# Merge-only content must be scanned even when neither parent contains it.
+git init -q "$T/merge"
+git -C "$T/merge" config user.email t@t
+git -C "$T/merge" config user.name t
+echo base > "$T/merge/base.txt"
+git -C "$T/merge" add .
+git -C "$T/merge" commit -qm base
+git -C "$T/merge" checkout -qb side
+echo side > "$T/merge/side.txt"
+git -C "$T/merge" add .
+git -C "$T/merge" commit -qm side
+git -C "$T/merge" checkout -qb target HEAD~1 || exit 1
+echo main > "$T/merge/main.txt"
+git -C "$T/merge" add .
+git -C "$T/merge" commit -qm main
+merge_base=$(git -C "$T/merge" rev-parse HEAD)
+git -C "$T/merge" merge --no-commit --no-ff side >/dev/null 2>&1 || exit 1
+printf 'BLOB\x00SECRET_MARKER\x00' > "$T/merge/merged.bin"
+git -C "$T/merge" add .
+git -C "$T/merge" commit -qm merge || exit 1
+[[ $(git -C "$T/merge" rev-list --parents -n 1 HEAD | wc -w) -eq 3 ]] || exit 1
+expect blocked "marker introduced by merge commit" -- "$GATE" --diff "$T/merge" "$merge_base..HEAD"
+
+# A scanner can fail without stderr; its exit status must still block.
+mkdir -p "$T/failing-bin"
+printf '#!/bin/sh\nexit 2\n' > "$T/failing-bin/grep"
+chmod +x "$T/failing-bin/grep"
+expect blocked "silent grep error blocks" -- env PATH="$T/failing-bin:$PATH" "$GATE" "$T/plain"
+
 echo "gate tests: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

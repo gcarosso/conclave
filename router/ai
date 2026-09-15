@@ -6,14 +6,14 @@
   ai council [flags] "question"   two mid-tier vendors; top-model judge only on disagreement (gated)
   ai consensus [flags] "question" N tier-1 samples (--n 5, max 10; --options "A;B") across eligible vendors; mode / splits / outliers
   ai accept <job-dir>             re-run the deterministic checks on a job's result.md
-  ai roles | ai jobs | ai smoke   list roles · recent jobs · tier-1 ping per vendor (public, read-only)
+  ai roles | ai jobs | ai smoke   list roles · recent jobs · tier-1 connectivity calls (live usage)
   ai init [--hub DIR] [--force]   bootstrap a hub: governance.json from the example, domain folders, generated instruction files
   ai version
 
 Flags: --domain D  --vendor V  --model M  --tier N  --max-tier N  --data-class public|sanitized|private
        --approve-top-model  --review / --no-review  --dry-run  --json  --source "why this is authorized"
-Every job writes <domain>/.ai/jobs/<id>/ (contract.json, events.jsonl, attempts/, verdict.json, acceptance.json).
-The first output line is the orchestration header; the last is the acceptance trailer. Exit 0 = accepted.
+Standard jobs record the contract, attempts, returned text, verdict, and acceptance under .ai/jobs/.
+For a standard job, exit 0 means its declared checks passed. Council and consensus have separate statuses.
 """
 import argparse
 import json
@@ -101,6 +101,11 @@ def cmd_smoke(g, p):
     try:
         for v in g["vendors"]:
             m = p["ladders"][v]["1"]
+            entry = kernel.catalog(p).get(m)
+            if not entry or not entry.get("available") or entry["vendor"] != v or entry.get("requires_approval"):
+                print("%-7s %-28s FAIL: unavailable, mismatched, or gated model" % (v, m))
+                ok = False
+                continue
             env = adapters.run(v, m, "Reply with exactly: SMOKE_OK", cwd, 180, max_turns=2)
             good = env["execution_status"] == "succeeded" and "SMOKE_OK" in (env.get("text") or "")
             ok = ok and good
@@ -154,6 +159,8 @@ def cmd_init(a):
     os.makedirs(os.path.join(system, "router", "jobs"), exist_ok=True)
     r = subprocess.run([sys.executable, os.path.join(system, "router", "generate.py"), "--write"], capture_output=True, text=True)
     print(r.stdout.strip() or r.stderr.strip())
+    if r.returncode:
+        fail("governance generation failed", r.returncode)
     print("\nNext: edit %s (domains, vendors, data classes), then `make -C %s/router generate`.\n"
           "Verify vendors with `ai smoke`, then `cd %s/<domain> && ai scout \"…\"`." % (gov, system, hub))
 
@@ -205,6 +212,7 @@ def main(argv):
             return
         try:
             jd, status, outs, judge = kernel.council(g, p, domain, data_class, a.task, None, approve_top=a.approve_top_model, interactive=interactive,
+                                                     declass=declass, source=a.source,
                                                      on_progress=lambda s: print("  · " + s, file=sys.stderr))
         except kernel.RouteError as e:
             fail(str(e))
@@ -226,7 +234,7 @@ def main(argv):
             print("Orchestration: consensus %d×tier-1 over %s  [dry-run]" % (max(3, min(a.n, 10)), "+".join(members)))
             return
         try:
-            jd, status, r = kernel.consensus(g, p, domain, data_class, a.task, n=a.n, options=opts, on_progress=lambda s: print("  · " + s, file=sys.stderr))
+            jd, status, r = kernel.consensus(g, p, domain, data_class, a.task, n=a.n, options=opts, declass=declass, source=a.source, on_progress=lambda s: print("  · " + s, file=sys.stderr))
         except kernel.RouteError as e:
             fail(str(e))
         print("Orchestration: consensus %d×tier-1 over %s" % (r["n"], "+".join(r["vendors"])))
@@ -245,6 +253,10 @@ def main(argv):
     if a.command == "auto":
         if not a.task:
             fail('usage: ai auto "task"')
+        if a.dry_run:
+            print("Orchestration: auto [dry-run: classification skipped; no model called]")
+            print("Choose an explicit role to preview its route, for example: ai scout --dry-run \"task\"")
+            return
         try:
             tr = kernel.triage(g, p, domain, data_class, a.task)
         except kernel.RouteError as e:
@@ -282,7 +294,7 @@ def main(argv):
         fail(str(e))
     if not a.json:
         print(header(role, vendor, model), flush=True)
-    text, acc, meta = kernel.run_job(g, p, contract, jd, vendor, model, tier, prompt, approve_top=a.approve_top_model, interactive=interactive,
+    text, acc, meta = kernel.run_job(g, p, contract, jd, vendor, model, tier, prompt, approve_top=a.approve_top_model, interactive=interactive, max_tier=a.max_tier,
                                      on_progress=(lambda s: print("  · " + s, file=sys.stderr)) if not a.json else None)
     if a.json:
         print(json.dumps({"header": header(role, vendor, meta["final_model"]), "acceptance_status": acc, "job_dir": jd, "text": text, "attempts": meta["attempts"], "checks": meta["verdict"]["checks"], "issues": meta["verdict"]["issues"]}, indent=2))

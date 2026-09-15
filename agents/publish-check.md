@@ -1,39 +1,19 @@
 ---
 name: publish-check
-description: Private-marker and secret scanner for arbitrary files, diffs, or directories — wraps the publish gate
+description: Scan files or Git objects for configured private markers using the publication gate.
 ---
 
-# Publish Check Agent
+# Publication check
 
-Scan any file, diff, or directory for private markers before sharing or publishing.
+Use `_system/gate/publish-check.sh` for a file, stdin, textual diff, or directory:
 
-## What it does
+- `--file FILE`: scan one file.
+- `--stdin`: scan supplied text.
+- `--diff`: scan the staged textual diff, or the unstaged diff when nothing is staged.
+- `DIR`: scan a directory tree.
 
-Wraps `_system/gate/publish-gate.sh` for flexible input:
-- `--file FILE` — scan a single file
-- `--diff` — scan the current staged git diff
-- `--stdin` — pipe content for scanning
-- `DIR` — scan a directory tree (same as the gate directly)
+For publication, use `_system/gate/publish-gate.sh --staged REPO` or `--diff REPO RANGE` to inspect Git blobs, including binaries. The wrapper's textual-diff mode does not provide that coverage.
 
-What counts as a marker is the markers file (`_system/gate/markers.txt`, or `.publish-gate-markers` in the scanned repo): home-directory paths, private folder names, personal email addresses, secret prefixes, whatever the operator has listed.
+Markers come from `--markers FILE`, `PUBLISH_GATE_MARKERS`, the target's `.publish-gate-markers`, or `_system/gate/markers.txt`. Exact-line exceptions are in the target's `.publish-gate-allow`.
 
-## Usage
-
-Ask: "check this file for private markers" or "scan my diff before pushing"
-
-The agent runs: `_system/gate/publish-check.sh`
-
-## Key paths
-
-- Wrapper: `_system/gate/publish-check.sh`
-- Gate engine: `_system/gate/publish-gate.sh`
-- Markers: `_system/gate/markers.txt` · Allowlist: `.publish-gate-allow` in the scanned directory
-
-## When to use
-
-- Before pushing any code to a public repo
-- Before sharing files outside the workstation
-- Before any pipeline that moves content from a private domain to a public one
-- Any time you're unsure if content contains private markers
-
-The gate is fail-closed: a scan error blocks, and so does a missing markers file. Report a block; never work around it.
+Report the mode, scope, exit status, and findings. A clean result means no configured pattern matched the scanned bytes. Do not describe it as proof that the material contains no sensitive content. A missing marker file or scan error blocks publication; resolve it before continuing.

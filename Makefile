@@ -33,5 +33,5 @@ init:                                ## bootstrap a hub around this checkout
 	@$(HERE)router/ai init
 
 lint:
-	@command -v shellcheck >/dev/null && shellcheck -S warning $(HERE)gate/*.sh $(HERE)gate/tests/*.sh $(HERE)ops/*.sh $(HERE)install.sh || echo "shellcheck not installed; skipped"
+	@if command -v shellcheck >/dev/null; then shellcheck -S warning $(HERE)gate/*.sh $(HERE)gate/tests/*.sh $(HERE)ops/*.sh $(HERE)install.sh; else echo "shellcheck not installed; skipped"; fi
 	@python3 -m py_compile $(HERE)router/kernel.py $(HERE)router/adapters.py $(HERE)router/verify.py $(HERE)router/generate.py $(HERE)router/ai $(HERE)registry/generate.py && echo "python: ok"
