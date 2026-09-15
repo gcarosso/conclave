@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy to registry/config.json (gitignored). All keys optional.",
+  "launchd_prefixes": ["com.example."],
+  "probe_composio": false,
+  "extra_commands": [
+    {"name": "gh", "cmd": "gh --version"},
+    {"name": "ollama", "cmd": ["ollama", "list"]}
+  ]
+}

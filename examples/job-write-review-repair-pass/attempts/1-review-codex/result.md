@@ -1,0 +1,1 @@
+{"checks": [{"id": "goal-met", "status": "fail", "evidence": "\"A third improvement was delivered\" \u2014 no number"}], "issues": [{"id": "R1", "severity": "major", "problem": "the third outcome is not quantified as the goal requires", "fix": "state the measured cache hit-rate change", "capability_deficit": false}]}

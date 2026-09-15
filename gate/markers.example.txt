@@ -1,0 +1,44 @@
+# conclave publish gate: starter markers file.
+#
+# Copy this file to markers.txt (next to publish-gate.sh; markers.txt is gitignored because it
+# names the things you never want in public) and edit it. Alternatively point the gate at any
+# file with `--markers FILE` or `PUBLISH_GATE_MARKERS=FILE`, or drop a `.publish-gate-markers`
+# file into the repository being scanned.
+#
+# Format: one POSIX extended regular expression per line (grep -E syntax), matched
+# case-insensitively against every line of every file, diff line, or binary string. Blank lines
+# and lines starting with # are ignored. Leading and trailing whitespace is trimmed. Any line
+# that matches a pattern blocks the publish unless that exact finding is listed in the target's
+# .publish-gate-allow file.
+#
+# Tip: a pattern that also matches its own text (for example a plain folder name) will flag this
+# file if you ever commit it. Escape one character (`\.`) or use a character class (`[-_]`) to
+# keep the pattern from matching itself.
+
+# --- home-directory paths ------------------------------------------------------------------------
+# Absolute paths leak usernames and machine layout. These match any user's home on macOS/Linux.
+/Users/[a-z0-9_.-]+/
+/home/[a-z0-9_.-]+/
+
+# --- private-key material ------------------------------------------------------------------------
+# PEM headers for RSA, OpenSSH, EC, and generic private keys.
+BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY
+
+# --- well-known secret prefixes ------------------------------------------------------------------
+# AWS access key id, OpenAI-style API key, GitHub personal access token.
+AKIA[0-9A-Z]{16}
+sk-[A-Za-z0-9]{20,}
+ghp_[A-Za-z0-9]{30,}
+
+# --- your personal email --------------------------------------------------------------------------
+# Replace with the address that must never appear in public output. Escape the dot.
+yourname@example\.com
+
+# --- your private folder or project names --------------------------------------------------------
+# Internal codenames, client names, private repository names. One pattern per line.
+# The character class keeps the pattern from matching this file itself.
+my[-_]private[-_]project
+
+# --- phone numbers (disabled) --------------------------------------------------------------------
+# Uncomment and set the area codes you want to catch. Matches 800-555-0100, 800.555.0100, 800 555 0100.
+# (800|888)[- .][0-9]{3}[- .][0-9]{4}

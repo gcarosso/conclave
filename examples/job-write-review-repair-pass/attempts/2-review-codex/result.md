@@ -1,0 +1,1 @@
+{"checks": [{"id": "goal-met", "status": "pass", "evidence": "three quantified outcomes: 1.2M requests, 0.4% errors, 71%\u219289% hit rate"}], "issues": []}

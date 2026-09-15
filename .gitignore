@@ -1,0 +1,19 @@
+# your hub's own state — never commit these
+shared/governance.json
+gate/markers.txt
+registry/config.json
+registry/manual.json
+registry/registry.json
+registry/REGISTRY.md
+registry/snapshots/
+router/jobs/
+handoffs/
+OPEN.md
+ops/.cockpit.lock/
+ops/.cockpit-attention
+
+# python / editors / os
+__pycache__/
+*.pyc
+.DS_Store
+.venv/

@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "job_id", "artifact_sha256", "reviewer", "execution_status", "acceptance_status", "checks", "issues"],
+  "properties": {
+    "version": {"type": "integer"},
+    "job_id": {"type": "string"},
+    "artifact_sha256": {"type": "string"},
+    "reviewer": {"type": "object", "required": ["vendor", "model"], "properties": {"vendor": {"type": "string"}, "model": {"type": "string"}}},
+    "execution_status": {"type": "string", "enum": ["pending", "running", "succeeded", "failed", "timeout"]},
+    "acceptance_status": {"type": "string", "enum": ["pending", "pass", "fail", "blocked"]},
+    "checks": {"type": "array", "items": {"type": "object", "required": ["id", "status", "evidence"], "properties": {
+      "id": {"type": "string"}, "status": {"type": "string", "enum": ["pass", "fail", "blocked"]}, "evidence": {"type": "string"}}}},
+    "issues": {"type": "array", "items": {"type": "object", "required": ["id", "severity", "problem"], "properties": {
+      "id": {"type": "string"}, "severity": {"type": "string", "enum": ["critical", "major", "minor"]}, "problem": {"type": "string"}, "fix": {"type": "string"}, "capability_deficit": {"type": "boolean"}}}}
+  }
+}

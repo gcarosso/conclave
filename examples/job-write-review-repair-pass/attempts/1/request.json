@@ -1,0 +1,9 @@
+{
+  "purpose": "work",
+  "vendor": "claude",
+  "model": "claude-sonnet-5",
+  "tier": 2,
+  "cwd": "<hub>/work",
+  "prompt": "Write the deliverable in full. No placeholders.\n\nRewrite docs/summary.md for a technical reader. Done means: \u2264120 words, keeps every date, states 3 quantified outcomes. Don't invent numbers.",
+  "at": "2026-09-15T06:36:41.410920+00:00"
+}

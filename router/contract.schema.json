@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "id", "domain", "data_class", "goal", "role", "inputs", "outputs", "scope", "authorization", "limits", "checks"],
+  "properties": {
+    "version": {"type": "integer"},
+    "id": {"type": "string"},
+    "domain": {"type": "string"},
+    "data_class": {"type": "string", "enum": ["public", "sanitized", "private"]},
+    "goal": {"type": "string"},
+    "role": {"type": "string"},
+    "inputs": {"type": "array", "items": {"type": "object", "required": ["path"], "properties": {"path": {"type": "string"}, "sha256": {"type": "string"}}}},
+    "outputs": {"type": "array", "items": {"type": "string"}},
+    "scope": {"type": "object", "required": ["read", "write", "effects", "writer"], "properties": {
+      "read": {"type": "array", "items": {"type": "string"}},
+      "write": {"type": "array", "items": {"type": "string"}},
+      "effects": {"type": "array", "items": {"type": "string", "enum": ["network", "publish", "message", "schedule", "edit-files"]}},
+      "writer": {"type": "string"}}},
+    "authorization": {"type": "object", "required": ["source"], "properties": {
+      "source": {"type": "string"},
+      "declassification": {"type": ["object", "null"]},
+      "top_model_approval": {"type": ["object", "null"]}}},
+    "limits": {"type": "object", "required": ["calls", "seconds", "repairs", "escalations"], "properties": {
+      "calls": {"type": "integer"}, "seconds": {"type": "integer"}, "repairs": {"type": "integer"}, "escalations": {"type": "integer"}}},
+    "checks": {"type": "array", "items": {"type": "object", "required": ["id", "kind", "rule"], "properties": {
+      "id": {"type": "string"}, "kind": {"type": "string", "enum": ["builtin", "command", "review"]}, "rule": {"type": "string"}}}}
+  }
+}

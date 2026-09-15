@@ -1,0 +1,12 @@
+{
+  "execution_status": "succeeded",
+  "exit_code": 0,
+  "text": "{\"checks\": [{\"id\": \"goal-met\", \"status\": \"pass\", \"evidence\": \"three quantified outcomes: 1.2M requests, 0.4% errors, 71%\\u219289% hit rate\"}], \"issues\": []}",
+  "session_id": null,
+  "input_tokens": 412,
+  "output_tokens": 96,
+  "cost_usd": null,
+  "billing": null,
+  "elapsed_s": 6.2,
+  "error": null
+}

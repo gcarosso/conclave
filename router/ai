@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+"""ai — the hub router. One CLI, one kernel, one adapter per vendor.
+
+  ai <role> [flags] "task"        run one job: route → run → verify → accept
+  ai auto [flags] "task"          one tier-1 triage call picks role/tier/review, then runs it (scout → specialist)
+  ai council [flags] "question"   two mid-tier vendors; top-model judge only on disagreement (gated)
+  ai consensus [flags] "question" N tier-1 samples (--n 5, max 10; --options "A;B") across eligible vendors; mode / splits / outliers
+  ai accept <job-dir>             re-run the deterministic checks on a job's result.md
+  ai roles | ai jobs | ai smoke   list roles · recent jobs · tier-1 ping per vendor (public, read-only)
+  ai init [--hub DIR] [--force]   bootstrap a hub: governance.json from the example, domain folders, generated instruction files
+  ai version
+
+Flags: --domain D  --vendor V  --model M  --tier N  --max-tier N  --data-class public|sanitized|private
+       --approve-top-model  --review / --no-review  --dry-run  --json  --source "why this is authorized"
+Every job writes <domain>/.ai/jobs/<id>/ (contract.json, events.jsonl, attempts/, verdict.json, acceptance.json).
+The first output line is the orchestration header; the last is the acceptance trailer. Exit 0 = accepted.
+"""
+import argparse
+import json
+import os
+import shutil
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import kernel  # noqa: E402
+import verify  # noqa: E402
+
+__version__ = "0.1.0"
+
+ROLE_PROMPT = {
+    "scout": "Answer briefly and concretely. Cite files or sources you actually read.",
+    "plan": "Produce a concrete plan: steps, files, checks, risks. No preamble.",
+    "code": "Make the change. Report exactly which files you changed and how to verify.",
+    "write": "Write the deliverable in full. No placeholders.",
+    "review": "Review critically. List concrete, located issues with fixes. Do not edit files.",
+    "live": "Use web search. Every claim dated and linked. Say what you could not verify.",
+    "longdoc": "Read the whole document set before answering. Cite locations.",
+}
+
+
+def parse(argv):
+    ap = argparse.ArgumentParser(prog="ai", add_help=True, description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("command")
+    ap.add_argument("task", nargs="?")
+    ap.add_argument("--domain")
+    ap.add_argument("--vendor")
+    ap.add_argument("--model")
+    ap.add_argument("--tier", type=int)
+    ap.add_argument("--max-tier", type=int)
+    ap.add_argument("--data-class", choices=["public", "sanitized", "private"])
+    ap.add_argument("--approve-top-model", action="store_true")
+    ap.add_argument("--review", dest="review", action="store_true", default=None)
+    ap.add_argument("--no-review", dest="review", action="store_false")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--source", default="cli")
+    ap.add_argument("--n", type=int, default=5)
+    ap.add_argument("--options")
+    ap.add_argument("--hub")
+    ap.add_argument("--force", action="store_true")
+    return ap.parse_intermixed_args(argv)
+
+
+def header(role, vendor, model):
+    return "Orchestration: %s %s/%s" % (role, vendor, model)
+
+
+def fail(msg, code=2):
+    print("ai: " + msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def cmd_roles(p):
+    for k, v in p["roles"].items():
+        print("%-10s %-52s %s/t%d%s" % (k, v["description"], v["default_vendor"], v["default_tier"], "  [hub-only]" if v.get("hub_only") else ""))
+
+
+def cmd_jobs():
+    try:
+        with open(kernel.INDEX_PATH) as f:
+            lines = f.readlines()[-15:]
+    except FileNotFoundError:
+        print("no jobs yet")
+        return
+    for l in lines:
+        j = json.loads(l)
+        acc = "?"
+        try:
+            acc = json.load(open(os.path.join(j["job_dir"], "acceptance.json")))["acceptance_status"]
+        except Exception:
+            pass
+        print("%-8s %-10s %-8s %s" % (acc, j["domain"], j["role"], j["job_dir"]))
+
+
+def cmd_smoke(g, p):
+    """Tier-1 ping per vendor from an empty temporary directory (no domain content is exposed)."""
+    import adapters
+    cwd = tempfile.mkdtemp(prefix="ai-smoke-")
+    ok = True
+    try:
+        for v in g["vendors"]:
+            m = p["ladders"][v]["1"]
+            env = adapters.run(v, m, "Reply with exactly: SMOKE_OK", cwd, 180, max_turns=2)
+            good = env["execution_status"] == "succeeded" and "SMOKE_OK" in (env.get("text") or "")
+            ok = ok and good
+            print("%-7s %-28s %s  (%ss, in=%s out=%s)" % (v, m, "OK" if good else "FAIL: " + str(env.get("error"))[:120], env.get("elapsed_s"), env.get("input_tokens"), env.get("output_tokens")))
+    finally:
+        shutil.rmtree(cwd, ignore_errors=True)
+    sys.exit(0 if ok else 1)
+
+
+def cmd_accept(g, p, job_dir):
+    c = json.load(open(os.path.join(job_dir, "contract.json")))
+    text = open(os.path.join(job_dir, "result.md")).read() if os.path.exists(os.path.join(job_dir, "result.md")) else ""
+    ad = os.path.join(job_dir, "attempts", "re-accept")
+    os.makedirs(ad, exist_ok=True)
+    verdict, acc = verify.evaluate(c, text, job_dir, ad, reviewer=None)
+    kernel.finalize(job_dir, c, verdict, [{"attempt": "re-accept"}])
+    print("Acceptance: %s · %s" % (acc.upper(), job_dir))
+    sys.exit(0 if acc == "pass" else 1)
+
+
+def cmd_init(a):
+    """Create shared/governance.json from the example, the domain folders, canaries, and generated instruction files."""
+    import subprocess
+    system = kernel.SYSTEM
+    hub = os.path.realpath(os.path.expanduser(a.hub)) if a.hub else os.path.dirname(system)
+    gov = kernel.GOV_PATH
+    if os.path.exists(gov) and not a.force:
+        fail("%s already exists (use --force to overwrite it)" % gov)
+    if not os.path.exists(kernel.GOV_EXAMPLE):
+        fail("missing %s" % kernel.GOV_EXAMPLE)
+    g = json.load(open(kernel.GOV_EXAMPLE))
+    g["hub"] = hub
+    os.makedirs(os.path.dirname(gov), exist_ok=True)
+    with open(gov, "w") as f:
+        json.dump(g, f, indent=2)
+        f.write("\n")
+    print("wrote %s (hub: %s)" % (gov, hub))
+    if os.path.realpath(os.path.join(hub, "_system")) != os.path.realpath(system):
+        print("note: this checkout is not at %s/_system; scripts that assume that layout will need the path adjusted" % hub)
+    for name, d in g["domains"].items():
+        if name == "_system":
+            continue
+        dd = os.path.join(hub, name)
+        os.makedirs(os.path.join(dd, ".ai", "jobs"), exist_ok=True)
+        if d.get("canary"):
+            cp = os.path.join(dd, d["canary"])
+            if not os.path.exists(cp):
+                with open(cp, "w") as f:
+                    f.write("canary: a session outside %s must not be able to read this file\n" % name)
+        print("domain %-12s %s" % (name, dd))
+    os.makedirs(os.path.join(system, "router", "jobs"), exist_ok=True)
+    r = subprocess.run([sys.executable, os.path.join(system, "router", "generate.py"), "--write"], capture_output=True, text=True)
+    print(r.stdout.strip() or r.stderr.strip())
+    print("\nNext: edit %s (domains, vendors, data classes), then `make -C %s/router generate`.\n"
+          "Verify vendors with `ai smoke`, then `cd %s/<domain> && ai scout \"…\"`." % (gov, system, hub))
+
+
+def main(argv):
+    a = parse(argv)
+    if a.command == "version":
+        print("ai %s" % __version__)
+        return
+    if a.command == "init":
+        return cmd_init(a)
+    try:
+        g, p = kernel.load()
+    except kernel.RouteError as e:
+        fail(str(e))
+    interactive = sys.stdin.isatty()
+    operator = g.get("operator", "operator")
+
+    if a.command == "roles":
+        return cmd_roles(p)
+    if a.command == "jobs":
+        return cmd_jobs()
+    if a.command == "smoke":
+        return cmd_smoke(g, p)
+    if a.command == "accept":
+        if not a.task:
+            fail("usage: ai accept <job-dir>")
+        return cmd_accept(g, p, a.task)
+
+    try:
+        domain = a.domain or kernel.detect_domain(os.getcwd(), g)
+    except kernel.RouteError as e:
+        fail(str(e))
+    if domain not in g["domains"]:
+        fail("unknown domain %s" % domain)
+    default_dc = g["domains"][domain]["default_data_class"]
+    data_class = a.data_class or default_dc
+    declass = None
+    order = {"private": 0, "sanitized": 1, "public": 2}
+    if order[data_class] > order[default_dc]:
+        declass = {"from": default_dc, "to": data_class, "by": operator, "via": "--data-class", "at": kernel.now(), "source": a.source}
+
+    if a.command == "council":
+        if not a.task:
+            fail('usage: ai council "question"')
+        if a.dry_run:
+            members = [v for v in p["council"]["members"] if v in kernel.eligible_vendors(g, domain, data_class)]
+            print("Orchestration: council %s (judge %s/%s on disagreement, gated)" % ("+".join(members), p["council"]["judge_vendor"], p["ladders"][p["council"]["judge_vendor"]][str(p["council"]["judge_tier"])]))
+            return
+        try:
+            jd, status, outs, judge = kernel.council(g, p, domain, data_class, a.task, None, approve_top=a.approve_top_model, interactive=interactive,
+                                                     on_progress=lambda s: print("  · " + s, file=sys.stderr))
+        except kernel.RouteError as e:
+            fail(str(e))
+        print("Orchestration: council " + " + ".join("%s/%s" % (o["vendor"], o["model"]) for o in outs) + ((" → judge %s" % p["ladders"][p["council"]["judge_vendor"]][str(p["council"]["judge_tier"])]) if judge else ""))
+        for o in outs:
+            ans = o["answer"] or {}
+            print("\n## %s\n%s (confidence %s)\n%s\nObjections: %s" % (o["vendor"], ans.get("recommendation"), ans.get("confidence"), ans.get("reasoning"), "; ".join(ans.get("objections", [])) or "none"))
+        if judge:
+            print("\n## Judge\n" + judge)
+        print("\nCouncil: %s · %s" % (status.upper(), jd))
+        sys.exit(0 if status in ("agree", "judged") else 1)
+
+    if a.command == "consensus":
+        if not a.task:
+            fail('usage: ai consensus "question" [--n 5] [--options "A;B;C"]')
+        opts = [o.strip() for o in a.options.split(";") if o.strip()] if a.options else None
+        members = [v for v in g["vendors"] if v in kernel.eligible_vendors(g, domain, data_class)]
+        if a.dry_run:
+            print("Orchestration: consensus %d×tier-1 over %s  [dry-run]" % (max(3, min(a.n, 10)), "+".join(members)))
+            return
+        try:
+            jd, status, r = kernel.consensus(g, p, domain, data_class, a.task, n=a.n, options=opts, on_progress=lambda s: print("  · " + s, file=sys.stderr))
+        except kernel.RouteError as e:
+            fail(str(e))
+        print("Orchestration: consensus %d×tier-1 over %s" % (r["n"], "+".join(r["vendors"])))
+        if r["mode"]:
+            print("\n**Mode:** %s — %d/%d samples (%.0f%%), mean confidence %.1f/10" % (r["mode"]["recommendation"], r["mode"]["count"], r["valid"], 100 * r["mode"]["share"], r["mode"]["mean_confidence"]))
+        print("\n**Splits:**")
+        for sp in r["splits"]:
+            print("- %s ×%d (%s)" % (sp["recommendation"], sp["count"], ", ".join(sp["vendors"])))
+        if r["outliers"]:
+            print("\n**Outliers (unique ideas):**")
+            for o in r["outliers"]:
+                print("- " + o)
+        print("\nConsensus: %s · %d/%d valid · %s" % (status.upper(), r["valid"], r["n"], jd))
+        sys.exit(0 if status == "consensus" else 1)
+
+    if a.command == "auto":
+        if not a.task:
+            fail('usage: ai auto "task"')
+        try:
+            tr = kernel.triage(g, p, domain, data_class, a.task)
+        except kernel.RouteError as e:
+            fail(str(e))
+        print("Triage (%s): %s · tier %d · review=%s — %s" % (tr["triaged_by"], tr["role"], tr["tier"], tr["review"], tr["reason"]), file=sys.stderr)
+        a.command = tr["role"]
+        if a.tier is None:
+            a.tier = tr["tier"]
+        if a.review is None:
+            a.review = tr["review"]
+
+    role = a.command
+    if not a.task:
+        fail('usage: ai <role> "task"  (ai roles lists roles)')
+    try:
+        vendor, model, tier = kernel.resolve(g, p, domain, role, data_class, vendor=a.vendor, model=a.model, tier=a.tier, max_tier=a.max_tier)
+        approval = None if a.dry_run else kernel.gate_check(g, p, model, a.approve_top_model, interactive)
+    except kernel.RouteError as e:
+        fail(str(e))
+    review = p["roles"][role]["review"] if a.review is None else a.review
+    prompt = (ROLE_PROMPT.get(role, "") + "\n\n" + a.task).strip()
+    try:
+        contract = kernel.build_contract(g, p, domain, role, a.task, data_class, vendor, model, tier, a.source, review, declass=declass, approval=approval)
+    except kernel.RouteError as e:
+        fail(str(e))
+
+    if a.dry_run:
+        print(header(role, vendor, model) + "  [dry-run: nothing executed, nothing written]")
+        print(json.dumps({"domain": domain, "data_class": data_class, "declassification": declass, "review": review, "gated": kernel.catalog(p)[model].get("requires_approval", False), "checks": contract["checks"], "timeout_s": contract["limits"]["seconds"]}, indent=2))
+        return
+
+    try:
+        jd = kernel.create_job(g, contract)
+    except kernel.RouteError as e:
+        fail(str(e))
+    if not a.json:
+        print(header(role, vendor, model), flush=True)
+    text, acc, meta = kernel.run_job(g, p, contract, jd, vendor, model, tier, prompt, approve_top=a.approve_top_model, interactive=interactive,
+                                     on_progress=(lambda s: print("  · " + s, file=sys.stderr)) if not a.json else None)
+    if a.json:
+        print(json.dumps({"header": header(role, vendor, meta["final_model"]), "acceptance_status": acc, "job_dir": jd, "text": text, "attempts": meta["attempts"], "checks": meta["verdict"]["checks"], "issues": meta["verdict"]["issues"]}, indent=2))
+    else:
+        print(text.rstrip())
+        print("\nAcceptance: %s · %s" % (acc.upper(), jd))
+    sys.exit(0 if acc == "pass" else 1)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

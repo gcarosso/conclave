@@ -1,0 +1,9 @@
+{
+  "purpose": "review",
+  "vendor": "codex",
+  "model": "gpt-5.6-sol",
+  "tier": 2,
+  "cwd": "<hub>/work",
+  "prompt": "You are a fresh-context reviewer. You did not write this artifact and must not edit anything.\nJudge ONLY the artifact against the goal and the listed checks. Cite evidence by quoting \u226420 words or naming a line.\n\nGOAL\nRewrite docs/summary.md for a technical reader. Done means: \u2264120 words, keeps every date, states 3 quantified outcomes. Don't invent numbers.\n\nCHECKS TO JUDGE (review kind)\n- goal-met: The artifact accomplishes the goal; claims are supported; nothing required is missing\n\nARTIFACT (sha256 95330ade4790e5c42465ea5503ec934d18103de301651debc9b6ed73e3485de1)\n-----\n# Summary\n\nThe service handled 1.2M requests in Q2 with p95 latency of 180 ms. Error rate fell to 0.4%. A third improvement was delivered in the caching layer.\n\n-----\n\nReturn ONLY a JSON object with exactly these fields:\n{\"checks\":[{\"id\":\"<check id>\",\"status\":\"pass|fail|blocked\",\"evidence\":\"<quote or line>\"}],\n  \"issues\":[{\"id\":\"R1\",\"severity\":\"critical|major|minor\",\"problem\":\"...\",\"fix\":\"...\",\"capability_deficit\":false}]}\nEvery listed check must appear once. Mark a check \"blocked\" only when the artifact does not contain enough to judge it.\nSet capability_deficit true only when the failure needs a stronger model, not a correction.",
+  "at": "2026-09-15T06:36:41.411432+00:00"
+}

@@ -1,0 +1,9 @@
+{
+  "purpose": "work",
+  "vendor": "claude",
+  "model": "claude-haiku-4-5-20251001",
+  "tier": 1,
+  "cwd": "<hub>/work",
+  "prompt": "Answer briefly and concretely. Cite files or sources you actually read.\n\nList the files in this directory with one line each on their content",
+  "at": "2026-09-15T06:34:57.097025+00:00"
+}

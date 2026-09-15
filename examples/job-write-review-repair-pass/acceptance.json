@@ -1,0 +1,35 @@
+{
+  "job_id": "20260915T063641410153Z-write",
+  "acceptance_status": "pass",
+  "execution_status": "succeeded",
+  "artifact_sha256": "02999790e0bee865a6f1c37b2b01dec38f782daf63252ed622830547a243286d",
+  "checks": [
+    {
+      "id": "nonempty",
+      "status": "pass",
+      "evidence": "artifact length 172"
+    },
+    {
+      "id": "goal-met",
+      "status": "pass",
+      "evidence": "three quantified outcomes: 1.2M requests, 0.4% errors, 71%\u219289% hit rate"
+    }
+  ],
+  "attempts": [
+    {
+      "attempt": 1,
+      "purpose": "work",
+      "vendor": "claude",
+      "model": "claude-sonnet-5",
+      "execution_status": "succeeded"
+    },
+    {
+      "attempt": 2,
+      "purpose": "repair",
+      "vendor": "claude",
+      "model": "claude-sonnet-5",
+      "execution_status": "succeeded"
+    }
+  ],
+  "at": "2026-09-15T06:36:41.412976+00:00"
+}

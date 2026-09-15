@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "job_id": "20260915T063457095956Z-scout",
+  "artifact_sha256": "6fc1c64aa828c5fd6ee77ad14793ae561bd01f479ceb76bf72283d2d23157808",
+  "reviewer": {
+    "vendor": "kernel",
+    "model": "verify.py"
+  },
+  "execution_status": "succeeded",
+  "acceptance_status": "pass",
+  "checks": [
+    {
+      "id": "nonempty",
+      "status": "pass",
+      "evidence": "artifact length 506"
+    }
+  ],
+  "issues": []
+}

@@ -1,0 +1,9 @@
+{
+  "purpose": "repair",
+  "vendor": "claude",
+  "model": "claude-sonnet-5",
+  "tier": 2,
+  "cwd": "<hub>/work",
+  "prompt": "Write the deliverable in full. No placeholders.\n\nRewrite docs/summary.md for a technical reader. Done means: \u2264120 words, keeps every date, states 3 quantified outcomes. Don't invent numbers.\n\nA fresh-context reviewer rejected the previous attempt. Fix every issue below and return the complete corrected artifact:\n- [major] the third outcome is not quantified as the goal requires \u2192 state the measured cache hit-rate change\n\nPREVIOUS ARTIFACT\n-----\n# Summary\n\nThe service handled 1.2M requests in Q2 with p95 latency of 180 ms. Error rate fell to 0.4%. A third improvement was delivered in the caching layer.\n",
+  "at": "2026-09-15T06:36:41.411984+00:00"
+}

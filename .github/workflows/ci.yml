@@ -1,0 +1,43 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.9"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: macos-latest
+            python: "3.12"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Router tests (offline, fake vendor)
+        run: make router-test
+      - name: Publish-gate fixtures
+        run: make gate-test
+      - name: Bootstrap a hub, generate, drift-check, dry-run a job
+        run: |
+          set -e
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/hub"
+          cp -R "$GITHUB_WORKSPACE" "$tmp/hub/_system"
+          cd "$tmp/hub/_system"
+          ./router/ai init
+          make drift-check
+          ./router/ai roles
+          cd ../work && ../_system/router/ai scout "what is here" --dry-run
+          cd ../public && AI_NO_COCKPIT=1 ../_system/router/ai consensus "A or B?" --dry-run
+      - name: Lint (shellcheck + py_compile)
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          make lint

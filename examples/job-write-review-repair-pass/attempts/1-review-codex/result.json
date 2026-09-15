@@ -1,0 +1,12 @@
+{
+  "execution_status": "succeeded",
+  "exit_code": 0,
+  "text": "{\"checks\": [{\"id\": \"goal-met\", \"status\": \"fail\", \"evidence\": \"\\\"A third improvement was delivered\\\" \\u2014 no number\"}], \"issues\": [{\"id\": \"R1\", \"severity\": \"major\", \"problem\": \"the third outcome is not quantified as the goal requires\", \"fix\": \"state the measured cache hit-rate change\", \"capability_deficit\": false}]}",
+  "session_id": null,
+  "input_tokens": 412,
+  "output_tokens": 96,
+  "cost_usd": null,
+  "billing": null,
+  "elapsed_s": 6.2,
+  "error": null
+}

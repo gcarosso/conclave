@@ -1,0 +1,19 @@
+{
+  "job_id": "20260915T063457095956Z-scout",
+  "acceptance_status": "pass",
+  "execution_status": "succeeded",
+  "artifact_sha256": "6fc1c64aa828c5fd6ee77ad14793ae561bd01f479ceb76bf72283d2d23157808",
+  "checks": [
+    {
+      "id": "nonempty",
+      "status": "pass",
+      "evidence": "artifact length 506"
+    }
+  ],
+  "attempts": [
+    {
+      "attempt": "re-accept"
+    }
+  ],
+  "at": "2026-09-15T06:35:11.531000+00:00"
+}

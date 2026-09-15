@@ -1,0 +1,250 @@
+{
+  "version": 2,
+  "note": "Router configuration. Domains, data classes and the top-model gate live in shared/governance.json. Model ids here are the only ids the router will launch; run `ai smoke` after editing to re-verify them. Publication is not a role: it is a hub-root action with gate/publish-gate.sh first.",
+  "roles": {
+    "scout": {
+      "description": "Quick lookup or triage",
+      "default_vendor": "claude",
+      "default_tier": 1,
+      "max_turns": 5,
+      "codex_sandbox": "read-only",
+      "review": false
+    },
+    "plan": {
+      "description": "Architecture, strategy, multi-doc analysis",
+      "default_vendor": "claude",
+      "default_tier": 2,
+      "max_turns": 10,
+      "codex_sandbox": "read-only",
+      "review": false
+    },
+    "code": {
+      "description": "Write or fix code",
+      "default_vendor": "codex",
+      "default_tier": 2,
+      "max_turns": 30,
+      "codex_sandbox": "workspace-write",
+      "review": true
+    },
+    "write": {
+      "description": "Write prose or documents",
+      "default_vendor": "claude",
+      "default_tier": 2,
+      "max_turns": 15,
+      "codex_sandbox": "workspace-write",
+      "review": true
+    },
+    "review": {
+      "description": "Fresh-context review of code or content",
+      "default_vendor": "codex",
+      "default_tier": 2,
+      "max_turns": 10,
+      "codex_sandbox": "read-only",
+      "review": false
+    },
+    "live": {
+      "description": "Current web / X research (public or sanitized payloads only)",
+      "default_vendor": "grok",
+      "default_tier": 2,
+      "max_turns": 40,
+      "codex_sandbox": "read-only",
+      "review": false
+    },
+    "longdoc": {
+      "description": "Very long document analysis",
+      "default_vendor": "claude",
+      "default_tier": 2,
+      "max_turns": 10,
+      "codex_sandbox": "read-only",
+      "review": false
+    },
+    "ingest": {
+      "description": "KB: raw \u2192 summary",
+      "default_vendor": "claude",
+      "default_tier": 1,
+      "max_turns": 10,
+      "codex_sandbox": "workspace-write",
+      "review": false
+    },
+    "compile": {
+      "description": "KB: update concept articles",
+      "default_vendor": "claude",
+      "default_tier": 1,
+      "max_turns": 15,
+      "codex_sandbox": "workspace-write",
+      "review": false
+    },
+    "ask": {
+      "description": "KB: answer from the wiki",
+      "default_vendor": "claude",
+      "default_tier": 1,
+      "max_turns": 10,
+      "codex_sandbox": "read-only",
+      "review": false
+    },
+    "file-back": {
+      "description": "KB: file an output into the wiki",
+      "default_vendor": "claude",
+      "default_tier": 1,
+      "max_turns": 5,
+      "codex_sandbox": "workspace-write",
+      "review": false
+    },
+    "lint": {
+      "description": "KB: health check",
+      "default_vendor": "claude",
+      "default_tier": 1,
+      "max_turns": 20,
+      "codex_sandbox": "read-only",
+      "review": false
+    }
+  },
+  "models": [
+    {
+      "id": "claude-haiku-4-5-20251001",
+      "vendor": "claude",
+      "tier": 1,
+      "requires_approval": false,
+      "available": true,
+      "billing": "subscription"
+    },
+    {
+      "id": "claude-sonnet-5",
+      "vendor": "claude",
+      "tier": 2,
+      "requires_approval": false,
+      "available": true,
+      "billing": "subscription"
+    },
+    {
+      "id": "claude-fable-5-1",
+      "vendor": "claude",
+      "tier": 3,
+      "requires_approval": true,
+      "available": true,
+      "billing": "subscription"
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "vendor": "codex",
+      "tier": 1,
+      "requires_approval": false,
+      "available": true,
+      "billing": "subscription"
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "vendor": "codex",
+      "tier": 2,
+      "requires_approval": false,
+      "available": true,
+      "billing": "subscription"
+    },
+    {
+      "id": "gpt-6-astra",
+      "vendor": "codex",
+      "tier": 3,
+      "requires_approval": true,
+      "available": true,
+      "billing": "subscription"
+    },
+    {
+      "id": "gpt-5.5-pro",
+      "vendor": "codex",
+      "tier": 3,
+      "requires_approval": true,
+      "available": false,
+      "billing": "subscription",
+      "note": "example of an unavailable entry: kept in the allowlist, refused by the router"
+    },
+    {
+      "id": "grok-4.5",
+      "vendor": "grok",
+      "tier": 1,
+      "requires_approval": false,
+      "available": true,
+      "billing": "subscription"
+    },
+    {
+      "id": "grok-4.6",
+      "vendor": "grok",
+      "tier": 2,
+      "requires_approval": false,
+      "available": true,
+      "billing": "subscription"
+    },
+    {
+      "id": "gemini-3.5-flash-lite",
+      "vendor": "gemini",
+      "tier": 1,
+      "requires_approval": false,
+      "available": true,
+      "billing": "api_key"
+    },
+    {
+      "id": "gemini-3.5-flash",
+      "vendor": "gemini",
+      "tier": 2,
+      "requires_approval": false,
+      "available": true,
+      "billing": "api_key"
+    },
+    {
+      "id": "gemini-3.5-pro",
+      "vendor": "gemini",
+      "tier": 3,
+      "requires_approval": false,
+      "available": false,
+      "billing": "api_key",
+      "note": "example of an unavailable entry: not served on free-tier keys"
+    }
+  ],
+  "ladders": {
+    "claude": {
+      "1": "claude-haiku-4-5-20251001",
+      "2": "claude-sonnet-5",
+      "3": "claude-fable-5-1"
+    },
+    "codex": {
+      "1": "gpt-5.6-luna",
+      "2": "gpt-5.6-sol",
+      "3": "gpt-6-astra"
+    },
+    "grok": {
+      "1": "grok-4.5",
+      "2": "grok-4.6",
+      "3": "grok-4.6"
+    },
+    "gemini": {
+      "1": "gemini-3.5-flash-lite",
+      "2": "gemini-3.5-flash",
+      "3": "gemini-3.5-flash"
+    }
+  },
+  "timeouts_s": {
+    "1": 240,
+    "2": 900,
+    "3": 1200
+  },
+  "limits": {
+    "repairs": 1,
+    "escalations": 1,
+    "review_max_chars": 80000,
+    "calls": 6
+  },
+  "reviewer_for": {
+    "claude": "codex",
+    "codex": "claude",
+    "grok": "claude",
+    "gemini": "claude"
+  },
+  "council": {
+    "members": [
+      "claude",
+      "codex"
+    ],
+    "tier": 2,
+    "judge_vendor": "claude",
+    "judge_tier": 3
+  }
+}

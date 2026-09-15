@@ -1,0 +1,12 @@
+{
+  "execution_status": "succeeded",
+  "exit_code": 0,
+  "text": "- `.canary-sandbox` \u2014 Sandbox verification file preventing external sessions from reading\n- `.ai/` \u2014 Directory for AI configuration\n- `.claude/` \u2014 Directory for Claude configuration  \n- `AGENTS.md` \u2014 Project scope and governance (work directory rules, data classification, publishing policy)\n- `CLAUDE.md` \u2014 Project instructions for work/ domain with scope boundaries and data class definitions\n- `notes.txt` \u2014 Contains \"alpha\" (note placeholder)\n- `todo.md` \u2014 Contains \"beta gamma\" (task list placeholder)",
+  "session_id": "<session-id>",
+  "input_tokens": 26,
+  "output_tokens": 859,
+  "cost_usd": 0.0401484,
+  "billing": "subscription",
+  "elapsed_s": 14.4,
+  "error": null
+}

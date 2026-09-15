@@ -1,0 +1,12 @@
+{
+  "execution_status": "succeeded",
+  "exit_code": 0,
+  "text": "# Summary\n\nThe service handled 1.2M requests in Q2 with p95 latency of 180 ms. Error rate fell to 0.4%. Cache hit rate rose from 71% to 89% after the caching-layer change.\n",
+  "session_id": null,
+  "input_tokens": 412,
+  "output_tokens": 96,
+  "cost_usd": null,
+  "billing": null,
+  "elapsed_s": 6.2,
+  "error": null
+}

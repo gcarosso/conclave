@@ -1,0 +1,7 @@
+- `.canary-sandbox` — Sandbox verification file preventing external sessions from reading
+- `.ai/` — Directory for AI configuration
+- `.claude/` — Directory for Claude configuration  
+- `AGENTS.md` — Project scope and governance (work directory rules, data classification, publishing policy)
+- `CLAUDE.md` — Project instructions for work/ domain with scope boundaries and data class definitions
+- `notes.txt` — Contains "alpha" (note placeholder)
+- `todo.md` — Contains "beta gamma" (task list placeholder)

@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "id": "20260915T063641410153Z-write",
+  "domain": "work",
+  "data_class": "private",
+  "goal": "Rewrite docs/summary.md for a technical reader. Done means: \u2264120 words, keeps every date, states 3 quantified outcomes. Don't invent numbers.",
+  "role": "write",
+  "inputs": [],
+  "outputs": [
+    "result.md"
+  ],
+  "scope": {
+    "read": [
+      "<hub>/work"
+    ],
+    "write": [
+      "<hub>/work"
+    ],
+    "effects": [
+      "edit-files"
+    ],
+    "writer": "claude/claude-sonnet-5"
+  },
+  "authorization": {
+    "source": "cli",
+    "declassification": null,
+    "top_model_approval": null
+  },
+  "limits": {
+    "calls": 6,
+    "seconds": 900,
+    "repairs": 1,
+    "escalations": 1,
+    "review_max_chars": 80000
+  },
+  "checks": [
+    {
+      "id": "nonempty",
+      "kind": "builtin",
+      "rule": "nonempty"
+    },
+    {
+      "id": "goal-met",
+      "kind": "review",
+      "rule": "The artifact accomplishes the goal; claims are supported; nothing required is missing"
+    }
+  ]
+}
