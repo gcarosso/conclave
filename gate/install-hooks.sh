@@ -32,7 +32,7 @@ done
 [[ -x "$GATE" ]] || { echo "install-hooks: gate not found or not executable: $GATE"; exit 1; }
 
 write_hook() {  # write_hook <hooks dir> <name> <body>
-  local dir="$1" name="$2" body="$3" path="$1/$2"
+  local body="$3" path="$1/$2"
   if [[ -e "$path" ]] && ! grep -qF "$MARK" "$path" && [[ $FORCE -eq 0 ]]; then
     echo "  refused  $path (existing hook is not ours; use --force to overwrite)"
     return 1
