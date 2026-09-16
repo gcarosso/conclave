@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added `scripts/e2e.sh` (`make e2e`): a temporary hub driven through the real `ai` CLI with fake `claude` and `codex` executables, covering install, generation, a data-class refusal, a reviewed write job with a rejected first draft and repair, handoffs, cockpit, gate hooks, and the registry probe. `--live` runs one real scout job. CI runs it in place of the inline bootstrap step.
+- Added `scripts/check-links.py` (`make check-links`, part of `make test`): relative Markdown links and heading anchors must resolve.
+
 - Rewrote documentation around routing, response evaluation, job records, and adapter limits. Removed unmeasured quality and cost claims.
 - Made `auto --dry-run` skip classification, and made explicit model selection respect `--max-tier`.
 - Applied catalog and approval checks before recorded adapter dispatch, including reviewers and council members; preserved council judge approval and declassification records.

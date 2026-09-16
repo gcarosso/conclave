@@ -109,7 +109,8 @@ The expected layout is `<hub>/_system/` for this checkout, alongside domain fold
 - [Troubleshooting](docs/troubleshooting.md), [example job records](examples/README.md), and [security scope](SECURITY.md)
 
 ```bash
-make test   # offline router tests and publication-gate fixtures
+make test   # offline router tests, publication-gate fixtures, and docs link check
+make e2e    # temporary hub driven through the real `ai` CLI with fake claude and codex CLIs
 make lint   # Python compilation; ShellCheck when installed
 ```
 

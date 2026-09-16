@@ -24,18 +24,10 @@ jobs:
         run: make router-test
       - name: Publish-gate fixtures
         run: make gate-test
-      - name: Bootstrap a hub, generate, drift-check, dry-run a job
-        run: |
-          set -e
-          tmp="$(mktemp -d)"
-          mkdir -p "$tmp/hub"
-          cp -R "$GITHUB_WORKSPACE" "$tmp/hub/_system"
-          cd "$tmp/hub/_system"
-          ./router/ai init
-          make drift-check
-          ./router/ai roles
-          cd ../work && ../_system/router/ai scout "what is here" --dry-run
-          cd ../public && AI_NO_COCKPIT=1 ../_system/router/ai consensus "A or B?" --dry-run
+      - name: Docs links and anchors
+        run: make check-links
+      - name: End-to-end in a temporary hub (fake vendor CLIs)
+        run: make e2e
       - name: Lint (shellcheck + py_compile)
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
         run: |

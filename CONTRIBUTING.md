@@ -6,10 +6,15 @@ Conclave uses standard-library Python and Bash. Keep changes focused and preserv
 
 ```bash
 make test
+make e2e
 make lint
 ```
 
 `make test` uses fake vendor responses and temporary repositories. It must not call a model, use credentials, or require a personal governance file. Test the acceptance decision or protected boundary when changing control logic. Add a failing-case fixture for scanner changes.
+
+`make test` also checks that every relative Markdown link and `#anchor` in the repository resolves (`scripts/check-links.py`). Run it after renaming a heading or moving a document.
+
+`make e2e` copies the checkout into a temporary hub, runs `install.sh --init`, and drives the real `ai` CLI through fake `claude` and `codex` executables in `scripts/fake-vendors/`: dry runs, a data-class refusal, a scout job, a write job whose first draft the fake reviewer rejects, `ai accept`, the cockpit, both handoff scripts, gate hooks on a scratch repository, and the registry probe. It writes nothing outside the temporary directory. `make e2e-live` replaces the fake CLIs with your logged-in vendors for one tier-1 scout job. When an adapter's command line or output parsing changes, update the fake CLI in the same change.
 
 `make lint` compiles Python and runs ShellCheck when installed. A ShellCheck failure fails the target; an absent installation is reported as skipped. CI installs ShellCheck for its Linux lint job.
 

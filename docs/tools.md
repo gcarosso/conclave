@@ -26,6 +26,7 @@ Run these from the checkout:
 
 ```bash
 make test
+make e2e
 make lint
 make generate
 make drift-check
