@@ -47,6 +47,10 @@ Custom checks are available through `kernel.build_contract(..., checks=[...])`. 
 
 A review receives the goal, review rules, and current response. It does not receive the writer's prior conversation. The router requests structured output where supported and validates the parsed result. Every requested check must appear once. Fallback occurs on invocation failure, never to replace a valid failing judgment.
 
+If the initial work call fails to execute, the router tries other eligible vendors at the same tier within the job's call budget. It skips unavailable and approval-gated models; writing roles can fall back only to Claude or Codex. A failed quality check follows the repair path instead. Execution fallback does not apply to repair or escalation calls.
+
+Claude writing roles receive `--permission-mode acceptEdits` so headless runs can edit files. Existing deny rules still apply; reviewer calls never receive that permission mode.
+
 Reviewer requests use the review role's read-only settings, a separate working directory, and no requested network access. Claude review disables built-in tools, MCP configuration discovery, and slash commands. Codex uses its read-only sandbox. Host configuration and vendor behavior still affect available context; this is not a hermetic evaluation environment.
 
 Each writer and reviewer call has its own attempt directory. The verdict records the reviewer that actually returned it, including after fallback. `artifact_sha256` covers returned text only. The standard review does not evaluate a captured repository diff, rerun the worker's claimed tests, or hash modified files.

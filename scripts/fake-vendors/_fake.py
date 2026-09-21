@@ -48,6 +48,11 @@ def main(vendor):
     prompt = args[-1] if args else ""
     text = _answer(prompt, vendor)
     if vendor == "claude":
+        if "--permission-mode" in args:
+            mode = args[args.index("--permission-mode") + 1]
+            if mode != "acceptEdits" or "You are a fresh-context reviewer" in prompt or "--tools" in args:
+                print("invalid edit permission for fake Claude call", file=sys.stderr)
+                return 2
         print(json.dumps({"type": "result", "is_error": False, "result": text, "session_id": "fake-session",
                           "usage": {"input_tokens": len(prompt.split()), "output_tokens": len(text.split())}, "total_cost_usd": 0}))
         return 0

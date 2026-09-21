@@ -342,6 +342,31 @@ def run_job(g, p, contract, jd, vendor, model, tier, prompt, approve_top=False, 
     meta = []
     env, ad = attempt(g, p, contract, jd, n, vendor, model, tier, prompt, budget=budget)
     meta.append({"attempt": n, "purpose": "work", "vendor": vendor, "model": model, "execution_status": env["execution_status"]})
+    # Vendor fallback for the work attempt: only when the vendor did not execute (capacity, auth, timeout, empty
+    # envelope), never on a verdict. Same tier, next eligible vendor; gated models are skipped; roles
+    # that write files fall back only to vendors that can write in the domain (claude, codex).
+    if env["execution_status"] != "succeeded":
+        writes = p["roles"][contract["role"]].get("codex_sandbox") == "workspace-write"
+        for fv in [x for x in eligible_vendors(g, contract["domain"], contract["data_class"]) if x != vendor]:
+            if budget.used >= budget.limit:
+                break
+            if writes and fv not in ("claude", "codex"):
+                continue
+            fm = p["ladders"].get(fv, {}).get(str(tier))
+            if not fm:
+                continue
+            try:
+                if gate_check(g, p, fm, False, False):
+                    continue   # fallback never selects an approval-gated model
+            except RouteError:
+                continue
+            event(jd, "vendor-fallback", failed=meta[-1]["vendor"], to=fv, model=fm, reason=(env.get("error") or env["execution_status"])[:160])
+            n += 1
+            env, ad = attempt(g, p, contract, jd, n, fv, fm, tier, prompt, purpose="work", budget=budget)
+            meta.append({"attempt": n, "purpose": "work", "vendor": fv, "model": fm, "execution_status": env["execution_status"]})
+            if env["execution_status"] == "succeeded":
+                vendor, model = fv, fm
+                break
     text = env.get("text") or ""
     rev, rinfo = (None, None)
     if any(c["kind"] == "review" for c in contract["checks"]):

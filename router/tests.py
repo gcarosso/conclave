@@ -189,10 +189,63 @@ class Acceptance(Base):
 
     def test_execution_failure_blocks(self):
         c, jd, v, m, t = self._job()
-        self.fake.script = [("failed", "")]
+        self.fake.script = [("failed", "")] * 6
         text, acc, meta = kernel.run_job(self.g, self.p, c, jd, v, m, t, "hi", interactive=False)
         self.assertEqual(acc, "blocked")
         self.assertTrue(os.path.exists(os.path.join(jd, "acceptance.json")))
+        with open(os.path.join(jd, "events.jsonl")) as f:
+            fallbacks = [e for e in map(json.loads, f) if e["event"] == "vendor-fallback"]
+        self.assertEqual([e["failed"] for e in fallbacks],
+                         [a["vendor"] for a in meta["attempts"][:-1]])
+
+    def test_work_vendor_fallback_on_execution_failure(self):
+        c, jd, v, m, t = self._job()
+        self.fake.script = [("failed", ""), ("succeeded", "A perfectly adequate answer with enough words in it.")]
+        text, acc, meta = kernel.run_job(self.g, self.p, c, jd, v, m, t, "hi", interactive=False)
+        self.assertEqual(acc, "pass")
+        used = [k["vendor"] for k in self.fake.calls]
+        self.assertEqual(len(used), 2); self.assertNotEqual(used[0], used[1])
+        self.assertEqual([a["execution_status"] for a in meta["attempts"]], ["failed", "succeeded"])
+        with open(os.path.join(jd, "events.jsonl")) as f:
+            ev = f.read()
+        self.assertIn("vendor-fallback", ev)
+
+    def test_no_fallback_on_a_failed_verdict(self):
+        c, jd, v, m, t = self._job()
+        self.fake.script = [("succeeded", ""), ("succeeded", "")]
+        kernel.run_job(self.g, self.p, c, jd, v, m, t, "hi", interactive=False)
+        self.assertEqual({k["vendor"] for k in self.fake.calls}, {v})
+
+    def test_writing_role_falls_back_only_to_vendors_that_can_write(self):
+        c, jd, v, m, t = self._job(role="code")
+        self.fake.script = [("failed", "")] * 6
+        kernel.run_job(self.g, self.p, c, jd, v, m, t, "hi", interactive=False)
+        work = [k["vendor"] for k in self.fake.calls]
+        self.assertTrue(set(work) <= {"claude", "codex"}, work)
+
+    def test_fallback_never_reaches_a_gated_model(self):
+        c, jd, v, m, t = self._job()
+        candidate = next(x for x in kernel.eligible_vendors(self.g, "public", "public") if x != v)
+        gated_model = self.p["ladders"][candidate][str(t)]
+        for entry in self.p["models"]:
+            if entry["id"] == gated_model:
+                entry["requires_approval"] = True
+        self.fake.script = [("failed", "")] * 6
+        kernel.run_job(self.g, self.p, c, jd, v, m, t, "hi", interactive=False, approve_top=True)
+        self.assertNotIn(gated_model, {k["model"] for k in self.fake.calls})
+
+    def test_verdict_names_the_reviewer_that_answered_after_fallback(self):
+        c, jd, v, m, t = self._job(role="write", review=True)
+        good = json.dumps({"checks": [{"id": "goal-met", "status": "pass", "evidence": "checked"}], "issues": []})
+        self.fake.script = [("succeeded", "a draft " * 10), ("failed", ""), ("succeeded", good)]
+        text, acc, meta = kernel.run_job(self.g, self.p, c, jd, v, m, t, "hi", interactive=False)
+        calls = [k["vendor"] for k in self.fake.calls]
+        self.assertEqual(meta["verdict"]["reviewer"]["vendor"], calls[-1])
+        self.assertNotEqual(calls[1], calls[2])
+        with open(os.path.join(jd, "verdict.json")) as f:
+            reviewer = json.load(f)["reviewer"]
+        self.assertEqual(reviewer, {"vendor": self.fake.calls[-1]["vendor"],
+                                    "model": self.fake.calls[-1]["model"]})
 
     def test_builtin_pass(self):
         c, jd, v, m, t = self._job()
@@ -590,6 +643,26 @@ class Integration(Base):
         self.assertEqual(args[args.index("--tools") + 1], "")
         self.assertIn("--strict-mcp-config", args)
         self.assertEqual(json.loads(args[args.index("--json-schema") + 1]), schema)
+
+    def test_claude_edit_permission_tracks_writing_role_and_excludes_reviewers(self):
+        from unittest.mock import patch
+        c = kernel.build_contract(self.g, self.p, "public", "code", "edit", "public",
+                                  "claude", "claude-sonnet-5", 2, "test", review=False)
+        jd = kernel.create_job(self.g, c)
+        with patch.object(adapters, "run", self._orig[3]), patch.object(
+                adapters, "_run", return_value=(0, '{"result":"answer"}', "", 0.1, None)) as run:
+            for purpose in ("work", "repair", "escalation", "review"):
+                kernel.attempt(self.g, self.p, c, jd, purpose, "claude", "claude-sonnet-5", 2,
+                               "task", purpose=purpose,
+                               json_schema=verify.REVIEW_OUTPUT_SCHEMA if purpose == "review" else None)
+                args = run.call_args.args[0]
+                if purpose == "review":
+                    self.assertNotIn("--permission-mode", args)
+                    self.assertEqual(args[args.index("--tools") + 1], "")
+                else:
+                    self.assertEqual(args[args.index("--permission-mode") + 1], "acceptEdits")
+            adapters.run("claude", "claude-sonnet-5", "read", self.tmp, 10, sandbox="read-only")
+            self.assertNotIn("--permission-mode", run.call_args.args[0])
 
     def test_handoff_requires_approval_before_writing(self):
         system = os.path.join(self.hub, "_system")

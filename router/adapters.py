@@ -69,8 +69,11 @@ def _last_json(out):
         return {}
 
 
-def claude(model, prompt, cwd, timeout, settings=None, max_turns=10, json_schema=None, no_tools=False):
+def claude(model, prompt, cwd, timeout, settings=None, max_turns=10, json_schema=None, no_tools=False, can_write=False):
     cmd = ["claude", "-p", "--model", model, "--output-format", "json", "--max-turns", str(max_turns)]
+    if can_write and not no_tools and json_schema is None:
+        # Headless writing roles accept file edits; existing deny rules still apply.
+        cmd += ["--permission-mode", "acceptEdits"]
     if settings and os.path.exists(settings):
         cmd += ["--settings", settings]
     if json_schema:
@@ -221,7 +224,8 @@ def run(vendor, model, prompt, cwd, timeout, sandbox="read-only", network=False,
         max_turns=10, json_schema=None, web_search=True, no_tools=False):
     """Uniform entry point. json_schema (a JSON Schema dict) requests structured output where the vendor supports it."""
     if vendor == "claude":
-        return claude(model, prompt, cwd, timeout, settings=settings, max_turns=max_turns, json_schema=json_schema, no_tools=no_tools)
+        return claude(model, prompt, cwd, timeout, settings=settings, max_turns=max_turns, json_schema=json_schema, no_tools=no_tools,
+                      can_write=(sandbox == "workspace-write" and json_schema is None and not no_tools))
     if vendor == "codex":
         return codex(model, prompt, cwd, timeout, sandbox=sandbox, network=network, output_schema=json_schema)
     if vendor == "grok":

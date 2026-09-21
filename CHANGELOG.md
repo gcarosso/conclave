@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added same-tier vendor fallback when the initial work call fails to execute, bounded by eligibility, model availability, approval gates, and the shared call budget. Writing roles fall back only to Claude or Codex.
+- Enabled Claude `acceptEdits` for writing calls while preserving read-only reviewer controls. Added five router regressions covering execution fallback and reviewer provenance, plus an adapter permission regression.
+
 - Added `scripts/e2e.sh` (`make e2e`): a temporary hub driven through the real `ai` CLI with fake `claude` and `codex` executables, covering install, generation, a data-class refusal, a reviewed write job with a rejected first draft and repair, handoffs, cockpit, gate hooks, and the registry probe. `--live` runs one real scout job. CI runs it in place of the inline bootstrap step.
 - Added `scripts/check-links.py` (`make check-links`, part of `make test`): relative Markdown links and heading anchors must resolve.
 
